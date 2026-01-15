@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: fin-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fin_dw}
+      POSTGRES_USER: ${POSTGRES_USER:-fin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fin}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/ddl_star_schema.sql:/docker-entrypoint-initdb.d/001_ddl_star_schema.sql:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fin} -d ${POSTGRES_DB:-fin_dw}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pgadmin:
+    image: dpage/pgadmin4:8
+    container_name: fin-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+
+volumes:
+  pgdata:
+  pgadmin-data:
