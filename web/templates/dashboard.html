@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Finance News Sentiment — Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="60"> <!-- auto refresh every 60s -->
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand">Finance News Sentiment ETL</div>
+    <div class="stats">
+      <span>price: <b>{{ counts.price_rows }}</b></span>
+      <span>news: <b>{{ counts.news_rows }}</b></span>
+      <span>daily senti: <b>{{ counts.senti_rows }}</b></span>
+    </div>
+
+    <form class="filter" method="get" action="/">
+      <input type="hidden" name="tab" value="{{ tab }}">
+      <label>Ticker</label>
+      <select name="ticker" onchange="this.form.submit()">
+        {% for t in ticker_options %}
+          <option value="{{ t }}" {% if t == ticker %}selected{% endif %}>{{ t }}</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+
+  <div class="tabs">
+    <a class="tab {% if tab=='news' %}active{% endif %}" href="/?tab=news&ticker={{ ticker }}">News</a>
+    <a class="tab {% if tab=='metrics' %}active{% endif %}" href="/?tab=metrics&ticker={{ ticker }}">Daily Metrics</a>
+    <a class="tab {% if tab=='corr' %}active{% endif %}" href="/?tab=corr&ticker={{ ticker }}">Correlation</a>
+  </div>
+
+  <div class="container">
+    {% if tab == 'news' %}
+      <h2>Latest News (50)</h2>
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th style="width:70px">Ticker</th>
+            <th style="width:170px">Published</th>
+            <th style="width:80px">Label</th>
+            <th style="width:90px">Score</th>
+            <th>Title</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in news %}
+            <tr>
+              <td class="mono">{{ r.ticker }}</td>
+              <td class="mono">{{ r.published_at }}</td>
+              <td class="mono">
+                <span class="pill {{ r.sentiment_label }}">{{ r.sentiment_label }}</span>
+              </td>
+              <td class="mono">{{ "%.3f"|format(r.sentiment_score or 0.0) }}</td>
+              <td>
+                {% if r.url %}
+                  <a href="{{ r.url }}" target="_blank" rel="noreferrer">{{ r.title }}</a>
+                {% else %}
+                  {{ r.title }}
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+    {% elif tab == 'metrics' %}
+      <h2>vw_daily_asset_metrics (latest)</h2>
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th style="width:70px">Ticker</th>
+            <th style="width:110px">Date</th>
+            <th style="width:110px">Close</th>
+            <th style="width:120px">Return_1d</th>
+            <th style="width:140px">Sentiment Index</th>
+            <th style="width:110px">News Count</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in metrics %}
+            <tr>
+              <td class="mono">{{ r.ticker }}</td>
+              <td class="mono">{{ r.d }}</td>
+              <td class="mono">{{ r.close }}</td>
+              <td class="mono">{{ r.return_1d }}</td>
+              <td class="mono">{{ r.sentiment_index }}</td>
+              <td class="mono">{{ r.news_count }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+    {% else %}
+      <h2>Correlation & Lags</h2>
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th style="width:70px">Ticker</th>
+            <th style="width:110px">corr_t</th>
+            <th style="width:110px">lag1</th>
+            <th style="width:110px">lag2</th>
+            <th style="width:70px">n_t</th>
+            <th style="width:70px">n_l1</th>
+            <th style="width:70px">n_l2</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in corr %}
+            <tr>
+              <td class="mono">{{ r.ticker }}</td>
+              <td class="mono">{{ r.corr_t }}</td>
+              <td class="mono">{{ r.corr_lag1 }}</td>
+              <td class="mono">{{ r.corr_lag2 }}</td>
+              <td class="mono">{{ r.n_t }}</td>
+              <td class="mono">{{ r.n_lag1 }}</td>
+              <td class="mono">{{ r.n_lag2 }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <div class="note">
+        Tip: ตอนนี้ days_with_sentiment ยังน้อย ค่าความสัมพันธ์เป็นผลเบื้องต้นเพื่อพิสูจน์ pipeline
+      </div>
+    {% endif %}
+  </div>
+</body>
+</html>
