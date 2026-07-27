@@ -2,6 +2,23 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
+pylibs/
 .env
 .DS_Store
 *.log
+
+# Secrets — these hold live credentials (Gmail app password, Cloud SQL
+# password) and must never reach the GitHub remote.
+.env.airflow
+airflow-stack/.env
+env_vars.yaml
+deploy2.sh
+
+# Large binaries / data dumps — not source, and they bloat the repo
+cloud-sql-proxy
+local_data.sql
+
+# Airflow runtime state (mounted into the containers)
+airflow-stack/logs/
+airflow-stack/plugins/
+airflow-stack/config/
