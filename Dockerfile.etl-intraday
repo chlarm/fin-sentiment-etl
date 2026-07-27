@@ -1,0 +1,23 @@
+# Lightweight ETL image for near-realtime intraday runs
+# NO PyTorch / Transformers — VADER only
+# Image size: ~180MB vs ~3GB for full ETL image
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System deps for psycopg2
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Intraday-only requirements (no torch, no transformers)
+COPY requirements-intraday.txt .
+RUN pip install --no-cache-dir -r requirements-intraday.txt
+
+# Copy application source
+COPY . .
+
+# Run intraday ETL
+ENTRYPOINT ["python", "-m", "src.etl.run_intraday"]

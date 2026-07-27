@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-dashboard",
+      "runtimeExecutable": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13",
+      "runtimeArgs": ["/Users/chlarmsia/Downloads/fin-sentiment-etl-2/run_web.py"],
+      "port": 8000
+    }
+  ]
+}

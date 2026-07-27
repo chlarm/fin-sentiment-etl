@@ -1,0 +1,23 @@
+# Docker Compose for GCP Production Setup
+# Note: This points to a managed database (like Cloud SQL) via environment variables.
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: fin-web-gcp
+    env_file: .env.gcp
+    ports:
+      - "8080:8000"
+    restart: always
+
+  etl:
+    build:
+      context: .
+      dockerfile: Dockerfile.etl
+    container_name: fin-etl-gcp
+    env_file: .env.gcp
+    # On Cloud Run Jobs, we don't need a persistent container, but for 
+    # VM-based deployments, you can run this via cron or a manual trigger.
+    profiles: ["etl-tools"]
