@@ -1,132 +1,637 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Finance News Sentiment — Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="60"> <!-- auto refresh every 60s -->
-  <link rel="stylesheet" href="/static/style.css">
+  <meta charset="UTF-8">
+  <title>Fin Sentiment Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_v }}">
 </head>
 <body>
-  <div class="topbar">
-    <div class="brand">Finance News Sentiment ETL</div>
-    <div class="stats">
-      <span>price: <b>{{ counts.price_rows }}</b></span>
-      <span>news: <b>{{ counts.news_rows }}</b></span>
-      <span>daily senti: <b>{{ counts.senti_rows }}</b></span>
+
+  {% macro sparkline(ticker_sym, positive) %}
+    {% set series = spark_data.get(ticker_sym) %}
+    {% if series and series|length > 1 %}
+      {% set closes = series | map(attribute='close') | select('number') | list %}
+      {% if closes|length > 1 %}
+        {% set min_c = closes | min %}
+        {% set max_c = closes | max %}
+        {% set range_c = (max_c - min_c) if max_c > min_c else 1 %}
+        {% set color = "#16c784" if positive else "#ea3943" %}
+        <svg viewBox="0 0 100 32" preserveAspectRatio="none" class="mini-spark">
+          <polyline fill="none" stroke="{{ color }}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"
+            points="{% for c in closes %}{{ (loop.index0 / (closes|length - 1)) * 100 }},{{ 30 - ((c - min_c) / range_c) * 28 }}{% if not loop.last %} {% endif %}{% endfor %}" />
+        </svg>
+      {% endif %}
+    {% endif %}
+  {% endmacro %}
+
+  <!-- Top Navbar -->
+  <nav class="navbar">
+    <a href="/" class="brand">
+      <span class="brand-mark">◆</span> FinSentiment
+    </a>
+    <div class="nav-links">
+      <a href="/?tab=home" class="nav-item {% if tab=='home' %}active{% endif %}" data-i18n="nav.home">Home</a>
+      <a href="/?tab=news&ticker={{ ticker }}&start_d={{ start_date }}&end_d={{ end_date }}" class="nav-item {% if tab=='news' %}active{% endif %}" data-i18n="nav.news">News</a>
+      <a href="/daily" class="nav-item" data-i18n="nav.daily_summary">Daily Summary</a>
+      <a href="/?tab=metrics&ticker={{ ticker }}&start_d={{ start_date }}&end_d={{ end_date }}" class="nav-item {% if tab=='metrics' %}active{% endif %}" data-i18n="nav.metrics">Metrics</a>
+      <a href="/?tab=corr&ticker={{ ticker }}&start_d={{ start_date }}&end_d={{ end_date }}" class="nav-item {% if tab=='corr' %}active{% endif %}" data-i18n="nav.correlations">Correlations</a>
+      <a href="/?tab=predict&ticker={{ ticker }}" class="nav-item {% if tab=='predict' %}active{% endif %}" data-i18n="nav.predict">Signal</a>
+      <a href="/?tab=watchlist" class="nav-item {% if tab=='watchlist' %}active{% endif %}" data-i18n="nav.watchlist">Watchlist</a>
+    </div>
+    <form method="get" action="/" class="navbar-search">
+      <input type="hidden" name="tab" value="news">
+      <svg class="navbar-search-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+        <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
+      </svg>
+      <input type="text" name="q" value="{{ search_query }}" placeholder="Search ticker, company, or news..." data-i18n-placeholder="nav.search_placeholder" autocomplete="off">
+    </form>
+    <div class="navbar-spacer"></div>
+    <div class="navbar-meta">
+      <span>{{ counts.news_rows }}</span> <span data-i18n="nav.headlines_tracked">headlines tracked</span>
+    </div>
+    <div class="lang-toggle">
+      <button type="button" class="lang-btn active" data-lang="en" onclick="setLang('en')">EN</button>
+      <button type="button" class="lang-btn" data-lang="th" onclick="setLang('th')">TH</button>
+    </div>
+  </nav>
+
+  <!-- Ticker Strip -->
+  <div class="ticker-strip">
+    {% for t in live_sentiment_data %}
+    <a href="/?tab=home&ticker={{ t.ticker }}" class="ticker-chip">
+      <span class="tc-name">{{ t.display_name }}</span>
+      {% set chg = t.return_1d %}
+      {{ sparkline(t.ticker, chg is not none and chg >= 0) }}
+      <span class="tc-price">{{ "%.2f"|format(t.close) if t.close is not none else '—' }}</span>
+      <span class="tc-change {% if chg and chg > 0 %}pos{% elif chg and chg < 0 %}neg{% else %}neu{% endif %}">
+        {% if chg is not none %}{{ "%+.2f%%"|format(chg * 100) }}{% else %}—{% endif %}
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+
+  {% if tab == 'home' %}
+  <div class="container">
+    <div class="home-grid">
+      <div class="home-main">
+
+        {% if home_news %}
+        <!-- Hero -->
+        {% set hero = home_news[0] %}
+        <a href="{{ hero.url }}" target="_blank" class="hero-card">
+          <div class="hero-tag">
+            <span class="ticker-badge">{{ hero.display_name }}</span>
+            {% if hero.sentiment_label %}
+              <span class="senti-badge {% if hero.sentiment_score and hero.sentiment_score > 0 %}pos{% elif hero.sentiment_score and hero.sentiment_score < 0 %}neg{% else %}neu{% endif %}">{{ hero.sentiment_label }}</span>
+            {% endif %}
+          </div>
+          <div class="hero-title">{{ hero.title }}</div>
+          <div class="hero-meta">
+            <span>{{ hero.source_name or 'Unknown source' }}</span>
+            <span>&middot;</span>
+            <span>{{ hero.date_str }} {{ hero.time_str }}</span>
+          </div>
+        </a>
+
+        <!-- News grid -->
+        <div class="section-head">
+          <h2 data-i18n="home.latest_headlines">Latest Headlines</h2>
+          <a href="/?tab=news" data-i18n="home.view_all_news">View all news &rarr;</a>
+        </div>
+        <div class="news-grid">
+          {% for n in home_news[1:] %}
+          <a href="{{ n.url }}" target="_blank" class="news-card">
+            <span class="ticker-badge">{{ n.display_name }}</span>
+            <div class="news-card-title">{{ n.title }}</div>
+            <div class="news-card-meta">
+              <span>{{ n.source_name or 'Unknown' }}</span>
+              <span>{{ n.date_str }}</span>
+            </div>
+          </a>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state" data-i18n="home.no_news">No news collected yet for this period.</div>
+        {% endif %}
+      </div>
+
+      <!-- Sidebar -->
+      <div class="home-sidebar">
+        <div class="sidebar-card">
+          <h3 data-i18n="home.trending">🔥 Trending Tickers</h3>
+          {% for t in trending %}
+          <div class="rail-row">
+            <div>
+              <div class="rail-name">{{ t.display_name }}</div>
+              <div class="rail-sub" data-i18n-suffix="home.headlines_today_suffix" data-i18n-num="{{ t.news_count or 0 }}">{{ t.news_count or 0 }} headlines today</div>
+            </div>
+            {% set chg = t.return_1d %}
+            {{ sparkline(t.ticker, chg is not none and chg >= 0) }}
+            <div class="rail-value">
+              <span class="rv-price">{{ "%.2f"|format(t.close) if t.close is not none else '—' }}</span>
+              <span class="rv-change {% if chg and chg > 0 %}val-pos{% elif chg and chg < 0 %}val-neg{% else %}val-neu{% endif %}">
+                {% if chg is not none %}{{ "%+.2f%%"|format(chg * 100) }}{% else %}—{% endif %}
+              </span>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+
+        <div class="sidebar-card">
+          <h3 data-i18n="home.top_gainers">📈 Top Gainers</h3>
+          {% for t in gainers %}
+          <div class="rail-row">
+            <span class="rail-name">{{ t.display_name }}</span>
+            {{ sparkline(t.ticker, true) }}
+            <span class="rail-value"><span class="rv-change val-pos">{{ "%+.2f%%"|format(t.return_1d * 100) }}</span></span>
+          </div>
+          {% endfor %}
+        </div>
+
+        <div class="sidebar-card">
+          <h3 data-i18n="home.top_losers">📉 Top Losers</h3>
+          {% for t in losers %}
+          <div class="rail-row">
+            <span class="rail-name">{{ t.display_name }}</span>
+            {{ sparkline(t.ticker, false) }}
+            <span class="rail-value"><span class="rv-change val-neg">{{ "%+.2f%%"|format(t.return_1d * 100) }}</span></span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% else %}
+  <div class="container">
+
+    <!-- Filter & Stats -->
+    <div class="toolbar">
+      <div class="stats-banner">
+        <div><span data-i18n="toolbar.prices">Prices:</span> <span>{{ "{:,}".format(counts.price_rows) }}</span></div>
+        <div><span data-i18n="toolbar.news">News:</span> <span>{{ "{:,}".format(counts.news_rows) }}</span></div>
+        <div><span data-i18n="toolbar.senti">Senti:</span> <span>{{ "{:,}".format(counts.senti_rows) }}</span></div>
+      </div>
+
+      <form method="get" action="/" style="display:flex; gap:12px; align-items: center;">
+        <input type="hidden" name="tab" value="{{ tab }}">
+
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <input type="date" name="start_d" value="{{ start_date }}" onchange="this.form.submit()" max="{{ now.strftime('%Y-%m-%d') }}" title="Start Date">
+          <span style="font-size: 0.9em; opacity: 0.7;" data-i18n="toolbar.to">to</span>
+          <input type="date" name="end_d" value="{{ end_date }}" onchange="this.form.submit()" max="{{ now.strftime('%Y-%m-%d') }}" title="End Date">
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <label style="font-size: 0.85em; font-weight: 600; color: var(--text-muted);" data-i18n="toolbar.asset">Asset:</label>
+          <select name="ticker" onchange="this.form.submit()">
+            {% for t in ticker_options %}
+            <option value="{{ t }}" {% if t==ticker %}selected{% endif %}>{{ ticker_display_names.get(t, t) }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </form>
     </div>
 
-    <form class="filter" method="get" action="/">
-      <input type="hidden" name="tab" value="{{ tab }}">
-      <label>Ticker</label>
-      <select name="ticker" onchange="this.form.submit()">
-        {% for t in ticker_options %}
-          <option value="{{ t }}" {% if t == ticker %}selected{% endif %}>{{ t }}</option>
-        {% endfor %}
-      </select>
-    </form>
-  </div>
+    <!-- Candlestick Sparklines Row -->
+    <div style="display: flex; gap: 10px; margin-bottom: 20px; overflow-x: auto; padding-bottom: 10px; border-bottom: 1px solid var(--border-color);">
+      {% for t, data in spark_data.items() %}
+      <div style="min-width: 140px; background: var(--bg-card); padding: 10px; border-radius: 8px; border: 1px solid var(--border-color); text-align: center;">
+        <div style="background: var(--bg-elevated); border: 1px solid var(--border-color); padding: 2px 5px; font-weight: bold; font-size: 0.85em; display: inline-block; margin-bottom: 5px; color: var(--text-dark); border-radius: 4px;">
+          {{ t }}
+        </div>
+        <div style="font-size: 0.9em; font-weight: bold; color: var(--text-main); margin-bottom: 5px;">
+          {{ "%.2f"|format(data[-1].close if data else 0) }}
+        </div>
+        <div style="height: 35px; width: 100%;">
+          <svg width="100%" height="100%" viewBox="0 0 100 40" preserveAspectRatio="none">
+            {% set prices = data %}
+            {% if prices %}
+              {% set min_p = prices | map(attribute='low') | min %}
+              {% set max_p = prices | map(attribute='high') | max %}
+              {% set range_p = max_p - min_p if max_p > min_p else 1 %}
+              {% for p in prices %}
+                {% set x = (loop.index0 / (prices|length)) * 100 %}
+                {% set w = (1 / (prices|length)) * 90 %}
+                {% set color = "#16c784" if p.close >= p.open else "#ea3943" %}
+                <line x1="{{ x + w/2 }}" y1="{{ 40 - ((p.high - min_p) / range_p) * 40 }}" x2="{{ x + w/2 }}" y2="{{ 40 - ((p.low - min_p) / range_p) * 40 }}" stroke="{{ color }}" stroke-width="0.5" />
+                {% set body_top = 40 - (([p.open, p.close]|max - min_p) / range_p) * 40 %}
+                {% set body_bottom = 40 - (([p.open, p.close]|min - min_p) / range_p) * 40 %}
+                {% set body_h = [body_bottom - body_top, 1]|max %}
+                <rect x="{{ x }}" y="{{ body_top }}" width="{{ w }}" height="{{ body_h }}" fill="{{ color }}" />
+              {% endfor %}
+            {% endif %}
+          </svg>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
 
-  <div class="tabs">
-    <a class="tab {% if tab=='news' %}active{% endif %}" href="/?tab=news&ticker={{ ticker }}">News</a>
-    <a class="tab {% if tab=='metrics' %}active{% endif %}" href="/?tab=metrics&ticker={{ ticker }}">Daily Metrics</a>
-    <a class="tab {% if tab=='corr' %}active{% endif %}" href="/?tab=corr&ticker={{ ticker }}">Correlation</a>
-  </div>
-
-  <div class="container">
+    <!-- Main Content Tab -->
     {% if tab == 'news' %}
-      <h2>Latest News (50)</h2>
-      <table class="tbl">
+    {% if search_query %}
+    <div style="margin-bottom: 14px; color: var(--text-muted); font-size: 13.5px;">
+      <span data-i18n="news.results_for">Search results for</span> "<strong style="color: var(--text-dark);">{{ search_query }}</strong>" — {{ total_news }}
+    </div>
+    {% endif %}
+    <div class="ff-table-container">
+      <table class="ff-table">
         <thead>
           <tr>
-            <th style="width:70px">Ticker</th>
-            <th style="width:170px">Published</th>
-            <th style="width:80px">Label</th>
-            <th style="width:90px">Score</th>
-            <th>Title</th>
+            <th class="date-col" data-i18n="news.date">Date</th>
+            <th class="time-col" data-i18n="news.time">Time</th>
+            <th class="ticker-col" data-i18n="news.ticker">Ticker</th>
+            <th data-i18n="news.impact">Impact</th>
+            <th data-i18n="news.detail">Detail</th>
+            <th data-i18n="news.sentiment">Sentiment</th>
           </tr>
         </thead>
         <tbody>
           {% for r in news %}
-            <tr>
-              <td class="mono">{{ r.ticker }}</td>
-              <td class="mono">{{ r.published_at }}</td>
-              <td class="mono">
-                <span class="pill {{ r.sentiment_label }}">{{ r.sentiment_label }}</span>
-              </td>
-              <td class="mono">{{ "%.3f"|format(r.sentiment_score or 0.0) }}</td>
-              <td>
-                {% if r.url %}
-                  <a href="{{ r.url }}" target="_blank" rel="noreferrer">{{ r.title }}</a>
-                {% else %}
-                  {{ r.title }}
-                {% endif %}
-              </td>
-            </tr>
+          <!-- Main Row -->
+          <tr onclick="document.getElementById('detail-{{ loop.index }}').classList.toggle('open')">
+            <td class="date-col">{{ r.date_str }}</td>
+            <td class="time-col">{{ r.time_str }}</td>
+            <td class="ticker-col">{{ r.ticker }}</td>
+            <td>
+              <!-- Simulate Impact icon based on sentiment magnitude -->
+              {% set magnitude = (r.sentiment_score|abs) %}
+              {% if magnitude > 0.6 %}
+                <span class="impact-icon impact-high"></span>
+              {% elif magnitude > 0.2 %}
+                <span class="impact-icon impact-med"></span>
+              {% else %}
+                <span class="impact-icon impact-low"></span>
+              {% endif %}
+            </td>
+            <td>
+              <a href="javascript:void(0)" class="title-link">{{ r.title }}</a>
+            </td>
+            <td class="{% if r.sentiment_score > 0 %}val-pos{% elif r.sentiment_score < 0 %}val-neg{% else %}val-neu{% endif %}">
+              {{ "%.3f"|format(r.sentiment_score or 0.0) }}
+            </td>
+          </tr>
+          <!-- Detail Expanded Row -->
+          <tr class="detail-row" id="detail-{{ loop.index }}">
+            <td colspan="6">
+              <div class="detail-content">
+                <strong data-i18n="news.source">Source:</strong> <a href="{{ r.url }}" target="_blank">{{ r.url }}</a>
+              </div>
+            </td>
+          </tr>
           {% endfor %}
         </tbody>
       </table>
+    </div>
+
+    <!-- Pagination Controls -->
+    <div class="pagination-bar">
+      <div>
+        <span data-i18n="pagination.page">Page</span> <strong>{{ current_page }}</strong> <span data-i18n="pagination.of">of</span> {{ total_pages }}
+      </div>
+      <div style="display: flex; gap: 8px;">
+        {% if current_page > 1 %}
+        <a href="/?tab=news&ticker={{ ticker }}&start_d={{ start_date }}&end_d={{ end_date }}&page={{ current_page - 1 }}&q={{ search_query }}" data-i18n="pagination.previous">&laquo; Previous</a>
+        {% endif %}
+
+        {% if current_page < total_pages %}
+        <a href="/?tab=news&ticker={{ ticker }}&start_d={{ start_date }}&end_d={{ end_date }}&page={{ current_page + 1 }}&q={{ search_query }}" data-i18n="pagination.next">Next &raquo;</a>
+        {% endif %}
+      </div>
+    </div>
 
     {% elif tab == 'metrics' %}
-      <h2>vw_daily_asset_metrics (latest)</h2>
-      <table class="tbl">
+    <div class="ff-table-container">
+      <table class="ff-table">
         <thead>
           <tr>
-            <th style="width:70px">Ticker</th>
-            <th style="width:110px">Date</th>
-            <th style="width:110px">Close</th>
-            <th style="width:120px">Return_1d</th>
-            <th style="width:140px">Sentiment Index</th>
-            <th style="width:110px">News Count</th>
+            <th data-i18n="metrics.date">Date</th>
+            <th data-i18n="metrics.ticker">Ticker</th>
+            <th data-i18n="metrics.open">Open</th>
+            <th data-i18n="metrics.close">Close</th>
+            <th data-i18n="metrics.return_1d">Return 1D</th>
+            <th data-i18n="metrics.sentiment_index">Sentiment Index</th>
+            <th data-i18n="metrics.news_count">News #</th>
           </tr>
         </thead>
         <tbody>
           {% for r in metrics %}
-            <tr>
-              <td class="mono">{{ r.ticker }}</td>
-              <td class="mono">{{ r.d }}</td>
-              <td class="mono">{{ r.close }}</td>
-              <td class="mono">{{ r.return_1d }}</td>
-              <td class="mono">{{ r.sentiment_index }}</td>
-              <td class="mono">{{ r.news_count }}</td>
-            </tr>
+          <tr>
+            <td class="date-col">{{ r.d }}</td>
+            <td class="ticker-col">{{ ticker_display_names.get(r.ticker, r.ticker) }}</td>
+            <td>{{ r.open if r.open is not none else '—' }}</td>
+            <td>{{ r.close if r.close is not none else '—' }}</td>
+            <td class="{% if r.return_1d != 'N/A' and r.return_1d.startswith('+') %}val-pos{% elif r.return_1d != 'N/A' and r.return_1d.startswith('-') %}val-neg{% else %}val-neu{% endif %}">
+              {{ r.return_1d }}
+            </td>
+            <td class="{% if r.sentiment_index != 'N/A' and r.sentiment_index > 0 %}val-pos{% elif r.sentiment_index != 'N/A' and r.sentiment_index < 0 %}val-neg{% else %}val-neu{% endif %}">
+              {{ r.sentiment_index }}
+            </td>
+            <td>{{ r.news_count }}</td>
+          </tr>
           {% endfor %}
         </tbody>
       </table>
+    </div>
 
+    {% elif tab == 'predict' %}
+    <h2 style="margin-bottom: 4px;" data-i18n="predict.title">Signal &amp; Backtest</h2>
+    <p style="color: var(--text-muted); margin-bottom: 16px;" data-i18n="predict.desc">
+      A technical-indicator model trained on real price history, evaluated on data it never saw. This reports what following its signal would actually have done — not a correlation coefficient.
+    </p>
+
+    <form method="get" action="/" style="margin-bottom:16px; display:flex; gap:8px; align-items:center;">
+      <input type="hidden" name="tab" value="predict">
+      <select name="ticker" onchange="this.form.submit()" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-main);">
+        {% for opt in ticker_options if opt != 'ALL' %}
+        <option value="{{ opt }}" {% if opt == predict_ticker %}selected{% endif %}>{{ ticker_display_names.get(opt, opt) }}</option>
+        {% endfor %}
+      </select>
+    </form>
+
+    {% if not predict_result %}
+    <div style="color: var(--text-muted);" data-i18n="predict.insufficient">Not enough price/technical history for {{ predict_ticker }} yet to train and honestly backtest a model.</div>
     {% else %}
-      <h2>Correlation & Lags</h2>
-      <table class="tbl">
+    <div style="display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
+      <div style="min-width:220px; background: var(--bg-card); padding:14px 16px; border-radius:8px; border:1px solid var(--border-color);">
+        <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:6px;" data-i18n="predict.latest_signal">Latest signal ({{ predict_result.latest_date }}, {{ predict_result.horizon }}d horizon)</div>
+        <div style="font-size:1.4em; font-weight:700;" class="{% if predict_result.latest_signal == 'UP' %}val-pos{% else %}val-neg{% endif %}">
+          {{ predict_result.latest_signal }} &nbsp;<span style="font-size:0.6em; color:var(--text-muted);">({{ "%.0f%%"|format(predict_result.latest_confidence * 100) }} <span data-i18n="predict.confidence">confidence</span>)</span>
+        </div>
+      </div>
+      <div style="min-width:220px; background: var(--bg-card); padding:14px 16px; border-radius:8px; border:1px solid var(--border-color);">
+        <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:6px;" data-i18n="predict.backtest_accuracy">Backtest accuracy (held-out test period)</div>
+        <div style="font-size:1.4em; font-weight:700; color:var(--text-main);">{{ "%.1f%%"|format(predict_result.test_accuracy * 100) }}</div>
+        <div style="font-size:0.8em; color:var(--text-muted); margin-top:4px;">
+          <span data-i18n="predict.vs_baseline">vs. always-predict-majority baseline</span> {{ "%.1f%%"|format(predict_result.majority_baseline * 100) }} —
+          {% if predict_result.beats_baseline %}<span class="val-pos" data-i18n="predict.beats">beats it</span>{% else %}<span class="val-neg" data-i18n="predict.no_beat">does not beat it</span>{% endif %}
+        </div>
+      </div>
+      <div style="min-width:220px; background: var(--bg-card); padding:14px 16px; border-radius:8px; border:1px solid var(--border-color);">
+        <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:6px;" data-i18n="predict.final_return">Cumulative return over test window</div>
+        <div style="font-size:1.0em;">
+          <span data-i18n="predict.strategy">Strategy</span>: <span class="{% if predict_result.final_return_strategy >= 0 %}val-pos{% else %}val-neg{% endif %}">{{ "%+.1f%%"|format(predict_result.final_return_strategy * 100) }}</span>
+          &nbsp;·&nbsp;
+          <span data-i18n="predict.buy_hold">Buy &amp; hold</span>: <span class="{% if predict_result.final_return_buy_hold >= 0 %}val-pos{% else %}val-neg{% endif %}">{{ "%+.1f%%"|format(predict_result.final_return_buy_hold * 100) }}</span>
+        </div>
+        <div style="font-size:0.75em; color:var(--text-muted); margin-top:4px;">n_train={{ predict_result.n_train }} · n_test={{ predict_result.n_test }}</div>
+      </div>
+    </div>
+
+    {% set wf = predict_result.walk_forward %}
+    {% if wf %}
+    <div class="ff-table-container" style="padding:14px 16px; margin-bottom:16px;">
+      <div style="font-size:0.85em; font-weight:600; margin-bottom:2px;" data-i18n="predict.wf_title">Walk-forward robustness ({{ wf.n_folds }} chronological folds)</div>
+      <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:8px;" data-i18n="predict.wf_desc">
+        The single held-out split above is one window. Retraining on an expanding window and testing on each of the {{ wf.n_folds }} chronological folds that follow shows the range instead of one number.
+      </div>
+      <div style="font-size:1.0em;">
+        <span data-i18n="predict.wf_range">Accuracy range</span>: <strong>{{ "%.1f%%"|format(wf.accuracy_min * 100) }} – {{ "%.1f%%"|format(wf.accuracy_max * 100) }}</strong>
+        &nbsp;(<span data-i18n="predict.wf_mean">mean</span> {{ "%.1f%%"|format(wf.accuracy_mean * 100) }})
+        &nbsp;·&nbsp;
+        <span class="{% if wf.folds_beating_baseline == 0 %}val-neg{% elif wf.folds_beating_baseline == wf.n_folds %}val-pos{% else %}val-neu{% endif %}">
+          {{ wf.folds_beating_baseline }}/{{ wf.n_folds }} <span data-i18n="predict.wf_folds_beat">folds beat their own baseline</span>
+        </span>
+      </div>
+      <div style="margin-top:8px; display:flex; gap:4px; flex-wrap:wrap;">
+        {% for f in wf.folds %}
+        <div title="{{ f.test_start }} to {{ f.test_end }}, n={{ f.n_test }}" style="font-size:0.72em; padding:3px 8px; border-radius:4px; background:var(--border-color); {% if f.beats_baseline %}color:#16c784;{% else %}color:#ea3943;{% endif %}">
+          {{ "%.0f%%"|format(f.accuracy * 100) }}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% set curve = predict_result.equity_curve %}
+    {% if curve and curve|length > 1 %}
+    {% set strat_vals = curve | map(attribute='strategy') | list %}
+    {% set hold_vals = curve | map(attribute='buy_hold') | list %}
+    {% set all_vals = strat_vals + hold_vals %}
+    {% set min_v = all_vals | min %}
+    {% set max_v = all_vals | max %}
+    {% set range_v = (max_v - min_v) if max_v > min_v else 1 %}
+    <div class="ff-table-container" style="padding:16px;">
+      <div style="font-size:0.85em; color:var(--text-muted); margin-bottom:8px;">
+        <span style="color:#16c784;">&#9644;</span> <span data-i18n="predict.strategy">Strategy</span>
+        &nbsp;&nbsp;<span style="color:#8a8f98;">&#9644;</span> <span data-i18n="predict.buy_hold">Buy &amp; hold</span>
+      </div>
+      <svg width="100%" height="180" viewBox="0 0 400 180" preserveAspectRatio="none">
+        <polyline fill="none" stroke="#16c784" stroke-width="1.6" stroke-linejoin="round"
+          points="{% for v in strat_vals %}{{ (loop.index0 / (strat_vals|length - 1)) * 400 }},{{ 170 - ((v - min_v) / range_v) * 160 }}{% if not loop.last %} {% endif %}{% endfor %}" />
+        <polyline fill="none" stroke="#8a8f98" stroke-width="1.6" stroke-dasharray="4 3" stroke-linejoin="round"
+          points="{% for v in hold_vals %}{{ (loop.index0 / (hold_vals|length - 1)) * 400 }},{{ 170 - ((v - min_v) / range_v) * 160 }}{% if not loop.last %} {% endif %}{% endfor %}" />
+      </svg>
+      <div style="display:flex; justify-content:space-between; font-size:0.75em; color:var(--text-muted); margin-top:4px;">
+        <span>{{ curve[0].d }}</span>
+        <span>{{ curve[-1].d }}</span>
+      </div>
+    </div>
+    {% endif %}
+
+    {% set expl = predict_result.explanation %}
+    {% if expl %}
+    {% set max_abs = expl | map(attribute='shap') | map('abs') | max %}
+    <div class="ff-table-container" style="padding:16px; margin-top:16px;">
+      <div style="font-size:0.95em; font-weight:600; margin-bottom:2px;" data-i18n="predict.why_title">Why this signal (SHAP contribution)</div>
+      <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:12px;" data-i18n="predict.why_desc">How much each indicator pushed today's prediction toward UP (green, right) or DOWN (red, left).</div>
+      {% for row in expl %}
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px; font-size:0.85em;">
+        <div style="width:120px; color:var(--text-muted); text-align:right;">{{ row.feature }}</div>
+        <div style="flex:1; position:relative; height:16px; background:var(--border-color); border-radius:3px;">
+          <div style="position:absolute; top:0; bottom:0; {% if row.shap >= 0 %}left:50%;{% else %}right:50%;{% endif %} width:{{ ((row.shap|abs) / max_abs) * 50 }}%; background:{% if row.shap >= 0 %}#16c784{% else %}#ea3943{% endif %}; border-radius:3px;"></div>
+        </div>
+        <div style="width:70px; color:var(--text-muted); font-size:0.9em;">{{ row.shap }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if sentiment_result %}
+    <div class="ff-table-container" style="padding:16px; margin-top:16px;">
+      <div style="font-size:0.95em; font-weight:600; margin-bottom:2px;" data-i18n="predict.sentiment_title">Sentiment-augmented model (exploratory)</div>
+      <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:12px;" data-i18n="predict.sentiment_desc">
+        Pooled across the {{ sentiment_result.tickers|length }} tickers with real sentiment history ({{ sentiment_result.tickers|join(', ') }}) — sentiment coverage only started ~Dec 2025, so n_test={{ sentiment_result.n_test }} is small. Directional, not conclusive.
+      </div>
+      <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+        <div style="min-width:200px;">
+          <div style="font-size:0.8em; color:var(--text-muted);" data-i18n="predict.backtest_accuracy">Backtest accuracy (pooled)</div>
+          <div style="font-size:1.2em; font-weight:700;">{{ "%.1f%%"|format(sentiment_result.test_accuracy * 100) }}
+            <span style="font-size:0.6em; color:var(--text-muted);">vs {{ "%.1f%%"|format(sentiment_result.majority_baseline * 100) }} <span data-i18n="predict.vs_baseline">baseline</span> —
+            {% if sentiment_result.beats_baseline %}<span class="val-pos" data-i18n="predict.beats">beats it</span>{% else %}<span class="val-neg" data-i18n="predict.no_beat">does not beat it</span>{% endif %}</span>
+          </div>
+        </div>
+        {% if sentiment_ticker_result %}
+        <div style="min-width:200px;">
+          <div style="font-size:0.8em; color:var(--text-muted);" data-i18n="predict.sentiment_signal_for">Sentiment-augmented signal for {{ predict_ticker }}</div>
+          <div style="font-size:1.2em; font-weight:700;" class="{% if sentiment_ticker_result.latest_signal == 'UP' %}val-pos{% else %}val-neg{% endif %}">
+            {{ sentiment_ticker_result.latest_signal }} <span style="font-size:0.6em; color:var(--text-muted);">({{ "%.0f%%"|format(sentiment_ticker_result.latest_confidence * 100) }})</span>
+          </div>
+        </div>
+        {% endif %}
+      </div>
+      {% set swf = sentiment_result.walk_forward %}
+      {% if swf %}
+      <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:8px;">
+        <span data-i18n="predict.wf_range">Walk-forward accuracy range</span> ({{ swf.n_folds }} <span data-i18n="predict.wf_folds_word">folds</span>):
+        <strong>{{ "%.0f%%"|format(swf.accuracy_min * 100) }} – {{ "%.0f%%"|format(swf.accuracy_max * 100) }}</strong>
+        &nbsp;·&nbsp;
+        <span class="{% if swf.folds_beating_baseline == 0 %}val-neg{% elif swf.folds_beating_baseline == swf.n_folds %}val-pos{% else %}val-neu{% endif %}">{{ swf.folds_beating_baseline }}/{{ swf.n_folds }} <span data-i18n="predict.wf_folds_beat">folds beat their own baseline</span></span>
+        — <span data-i18n="predict.wf_single_split_caveat">the single-split number above may not hold across other time windows</span>
+      </div>
+      {% endif %}
+      {% if sentiment_ticker_result and predict_result.latest_signal != sentiment_ticker_result.latest_signal %}
+      <div style="font-size:0.8em; color:#f0b429;" data-i18n="predict.signal_disagree">&#9888; Technical-only and sentiment-augmented models disagree on direction for {{ predict_ticker }} — treat with caution.</div>
+      {% endif %}
+    </div>
+    {% elif predict_ticker %}
+    <div style="font-size:0.8em; color:var(--text-muted); margin-top:16px;" data-i18n="predict.sentiment_insufficient">Not enough tickers with real sentiment history yet to train a sentiment-augmented model.</div>
+    {% endif %}
+
+    {% if case_studies %}
+    <div style="margin-top:16px;">
+      <div style="font-size:0.95em; font-weight:600; margin-bottom:2px;" data-i18n="predict.cases_title">Case studies (real, test-period predictions)</div>
+      <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:12px;" data-i18n="predict.cases_desc">
+        Days the sentiment-augmented model was confident and correct on data it never trained on, where sentiment was a major driver of the call — not cherry-picked to make a point, this is what the model actually did.
+      </div>
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        {% for c in case_studies %}
+        <div class="ff-table-container" style="padding:14px 16px; flex:1; min-width:260px;">
+          <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;">
+            <span style="font-weight:700;">{{ ticker_display_names.get(c.ticker, c.ticker) }}</span>
+            <span style="font-size:0.75em; color:var(--text-muted);">{{ c.date }}</span>
+          </div>
+          <div style="margin-bottom:6px;">
+            <span class="{% if c.signal == 'UP' %}val-pos{% else %}val-neg{% endif %}" style="font-weight:700;">{{ c.signal }}</span>
+            <span style="font-size:0.8em; color:var(--text-muted);">({{ "%.0f%%"|format(c.confidence * 100) }} <span data-i18n="predict.confidence">confidence</span>)</span>
+            &nbsp;→&nbsp;
+            <span data-i18n="predict.realized">realized</span>
+            <span class="{% if c.realized_return_pct >= 0 %}val-pos{% else %}val-neg{% endif %}">{{ "%+.1f%%"|format(c.realized_return_pct) }}</span>
+          </div>
+          <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:6px;">
+            <span data-i18n="predict.cases_senti_share">Sentiment's share of the model's reasoning</span>: {{ "%.0f%%"|format(c.sentiment_share_of_signal * 100) }}
+          </div>
+          {% if c.sample_headline %}
+          <div style="font-size:0.78em; color:var(--text-muted); font-style:italic;">&ldquo;{{ c.sample_headline }}&rdquo;</div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+    {% endif %}
+
+    {% elif tab == 'watchlist' %}
+    <h2 style="margin-bottom: 4px;" data-i18n="watchlist.title">Watchlist</h2>
+    <p style="color: var(--text-muted); margin-bottom: 16px;" data-i18n="watchlist.desc">
+      Tickers you're monitoring. Each visit re-checks the model signal and flags it if it flipped since last time — email alerts fire automatically when EMAIL_* env vars are configured.
+    </p>
+
+    <form method="post" action="/watchlist/add" style="margin-bottom:20px; display:flex; gap:8px; align-items:center;">
+      <select name="ticker" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-main);">
+        {% for opt in ticker_options if opt != 'ALL' and opt not in watchlist_tickers %}
+        <option value="{{ opt }}">{{ ticker_display_names.get(opt, opt) }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn" style="padding:6px 14px; border-radius:6px; border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-main); cursor:pointer;" data-i18n="watchlist.add">Add to watchlist</button>
+    </form>
+
+    {% if not watchlist_rows %}
+    <div style="color: var(--text-muted);" data-i18n="watchlist.empty">Nothing on your watchlist yet — add a ticker above.</div>
+    {% else %}
+    <div class="ff-table-container">
+      <table class="ff-table">
         <thead>
           <tr>
-            <th style="width:70px">Ticker</th>
-            <th style="width:110px">corr_t</th>
-            <th style="width:110px">lag1</th>
-            <th style="width:110px">lag2</th>
-            <th style="width:70px">n_t</th>
-            <th style="width:70px">n_l1</th>
-            <th style="width:70px">n_l2</th>
+            <th data-i18n="watchlist.ticker">Ticker</th>
+            <th data-i18n="watchlist.signal">Signal</th>
+            <th data-i18n="watchlist.confidence">Confidence</th>
+            <th data-i18n="watchlist.status">Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in watchlist_rows %}
+          <tr>
+            <td class="ticker-col">{{ r.display_name or r.ticker }}</td>
+            {% if r.insufficient %}
+            <td colspan="2" class="text-muted" data-i18n="predict.insufficient">Not enough history to model yet</td>
+            {% else %}
+            <td class="{% if r.latest_signal == 'UP' %}val-pos{% else %}val-neg{% endif %}">{{ r.latest_signal }}</td>
+            <td>{{ "%.0f%%"|format(r.latest_confidence * 100) }}</td>
+            {% endif %}
+            <td>
+              {% if r.changed %}
+              <span style="color:#f0b429; font-weight:600;" data-i18n="watchlist.flipped">&#9888; flipped from {{ r.previous_signal }}</span>
+              {% elif r.previous_signal %}
+              <span class="text-muted" data-i18n="watchlist.unchanged">unchanged</span>
+              {% elif not r.insufficient %}
+              <span class="text-muted" data-i18n="watchlist.first_check">first check</span>
+              {% endif %}
+            </td>
+            <td>
+              <form method="post" action="/watchlist/remove" style="display:inline;">
+                <input type="hidden" name="ticker" value="{{ r.ticker }}">
+                <button type="submit" style="background:none; border:none; color:var(--text-muted); cursor:pointer;" data-i18n="watchlist.remove">Remove</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% else %}
+    <div style="display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
+      <div style="min-width:280px; background: var(--bg-card); padding:14px 16px; border-radius:8px; border:1px solid var(--border-color);">
+        <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:6px;" data-i18n="corr.pooled_title">Pooled estimate (all tickers, fixed effects)</div>
+        {% if corr_summary.pooled and corr_summary.pooled.slope is not none %}
+        <div style="font-size:1.1em; font-weight:700; color:var(--text-main);">
+          slope = {{ corr_summary.pooled.slope }} &nbsp; (p = {{ corr_summary.pooled.p }})
+        </div>
+        <div style="font-size:0.8em; color:var(--text-muted); margin-top:4px;">
+          <span data-i18n="corr.pooled_n">N</span> = {{ corr_summary.pooled.n }} · {{ corr_summary.pooled.n_tickers }} <span data-i18n="corr.pooled_tickers">tickers</span> · SE = {{ corr_summary.pooled.se }}
+        </div>
+        {% else %}
+        <div style="color:var(--text-muted);" data-i18n="corr.pooled_insufficient">Not enough overlapping data yet across tickers</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="ff-table-container">
+      <table class="ff-table">
+        <thead>
+          <tr>
+            <th data-i18n="corr.ticker">Ticker</th>
+            <th data-i18n="corr.corr_t">Corr T</th>
+            <th data-i18n="corr.lag1">Lag 1</th>
+            <th data-i18n="corr.lag1_ci">95% CI (Lag1)</th>
+            <th data-i18n="corr.q_lag1">q-value (FDR)</th>
+            <th data-i18n="corr.lag2">Lag 2</th>
+            <th data-i18n="corr.n">N (T/L1/L2)</th>
           </tr>
         </thead>
         <tbody>
           {% for r in corr %}
-            <tr>
-              <td class="mono">{{ r.ticker }}</td>
-              <td class="mono">{{ r.corr_t }}</td>
-              <td class="mono">{{ r.corr_lag1 }}</td>
-              <td class="mono">{{ r.corr_lag2 }}</td>
-              <td class="mono">{{ r.n_t }}</td>
-              <td class="mono">{{ r.n_lag1 }}</td>
-              <td class="mono">{{ r.n_lag2 }}</td>
-            </tr>
+          <tr style="{% if r.n_flag == 'low' %}opacity:0.6;{% endif %}">
+            <td class="ticker-col">{{ r.ticker }}</td>
+            <td class="{% if r.corr_t and r.corr_t > 0 %}val-pos{% elif r.corr_t and r.corr_t < 0 %}val-neg{% else %}val-neu{% endif %}">{{ r.corr_t or '-' }}</td>
+            <td>{{ r.corr_lag1 or '-' }} {{ r.sig_lag1 if r.corr_lag1 is not none else '' }}</td>
+            <td class="text-muted">{% if r.ci_lo is not none %}{{ r.ci_lo }} – {{ r.ci_hi }}{% else %}-{% endif %}</td>
+            <td class="text-muted">{% if r.q_lag1 is not none %}{{ r.q_lag1 }} {{ r.sig_lag1_fdr }}{% else %}-{% endif %}</td>
+            <td>{{ r.corr_lag2 or '-' }}</td>
+            <td class="text-muted">{{ r.n_t }} / {{ r.n_lag1 }} / {{ r.n_lag2 }}{% if r.n_flag == 'low' %} <span data-i18n="corr.low_n" title="Low sample size">(low N)</span>{% endif %}</td>
+          </tr>
           {% endfor %}
         </tbody>
       </table>
-
-      <div class="note">
-        Tip: ตอนนี้ days_with_sentiment ยังน้อย ค่าความสัมพันธ์เป็นผลเบื้องต้นเพื่อพิสูจน์ pipeline
-      </div>
+    </div>
     {% endif %}
+
   </div>
+  {% endif %}
+
+  <script src="/static/i18n.js?v={{ asset_v }}"></script>
 </body>
 </html>

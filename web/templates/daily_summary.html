@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="{{ 'th' if lang == 'th' else 'en' }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Daily Summary — {{ date_d }}</title>
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_v }}">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    /* ── Daily Summary Specific Styles (theme-aware via shared CSS vars) ── */
+    .daily-hero {
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border-color);
+      padding: 20px 0 0;
+    }
+    .daily-hero-inner {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+    .daily-top-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .daily-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--text-dark);
+    }
+    .daily-title span {
+      color: var(--accent-blue);
+    }
+    .daily-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .date-select, .ticker-select-daily {
+      padding: 8px 14px;
+      border: 1.5px solid var(--border-color);
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      color: var(--text-main);
+      background: var(--bg-elevated);
+      cursor: pointer;
+    }
+    .lang-toggle {
+      display: flex;
+      background: var(--bg-elevated);
+      border-radius: 8px;
+      padding: 3px;
+      gap: 2px;
+    }
+    .lang-btn {
+      padding: 6px 14px;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      color: var(--text-muted);
+      background: transparent;
+      text-decoration: none;
+      transition: all 0.18s;
+    }
+    .lang-btn.active {
+      background: var(--bg-card);
+      color: var(--accent-blue);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+    }
+
+    /* ── Filter Chips ── */
+    .filter-chips-row {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding-bottom: 12px;
+      scrollbar-width: none;
+    }
+    .filter-chips-row::-webkit-scrollbar { display: none; }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 7px 18px;
+      border-radius: 999px;
+      border: 1.5px solid var(--border-color);
+      background: var(--bg-card);
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: var(--text-main);
+      cursor: pointer;
+      white-space: nowrap;
+      text-decoration: none;
+      transition: all 0.18s;
+    }
+    .chip:hover { border-color: var(--accent-blue); color: var(--accent-blue); }
+    .chip.active {
+      background: var(--accent-blue);
+      border-color: var(--accent-blue);
+      color: #fff;
+    }
+
+    /* ── Content ── */
+    .daily-content {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 32px 24px;
+    }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+      gap: 24px;
+    }
+
+    /* ── Asset Card ── */
+    .asset-card {
+      background: var(--bg-card);
+      border: 1.5px solid var(--border-color);
+      border-radius: 16px;
+      overflow: hidden;
+      transition: transform 0.2s;
+    }
+    .asset-card:hover { transform: translateY(-2px); }
+    .asset-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .asset-ticker {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--text-dark);
+    }
+    .asset-class-badge {
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: var(--bg-elevated);
+      color: var(--text-muted);
+      margin-left: 8px;
+    }
+    .asset-senti-badge {
+      font-size: 0.82rem;
+      font-weight: 700;
+      padding: 5px 14px;
+      border-radius: 999px;
+    }
+    .senti-POSITIVE { background: rgba(15, 157, 99, 0.15); color: var(--pos); }
+    .senti-NEGATIVE { background: rgba(220, 38, 38, 0.15); color: var(--neg); }
+    .senti-NEUTRAL  { background: var(--bg-elevated); color: var(--text-muted); }
+
+    .asset-stats {
+      display: flex;
+      gap: 20px;
+      padding: 12px 20px;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-color);
+    }
+    .stat-item { font-size: 0.82rem; color: var(--text-muted); }
+    .stat-item strong { color: var(--text-dark); }
+    .stat-pos { color: var(--pos); font-weight: 700; }
+    .stat-neg { color: var(--neg); font-weight: 700; }
+    .stat-neu { color: var(--text-muted); font-weight: 700; }
+
+    /* ── Headlines ── */
+    .headlines-list {
+      padding: 8px 0;
+      max-height: 340px;
+      overflow-y: auto;
+    }
+    .headline-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--border-color);
+      transition: background 0.15s;
+    }
+    .headline-row:hover { background: var(--bg-elevated); }
+    .headline-row:last-child { border-bottom: none; }
+    .headline-time {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-weight: 500;
+      min-width: 38px;
+      padding-top: 2px;
+    }
+    .headline-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      margin-top: 5px;
+    }
+    .dot-POSITIVE { background: var(--pos); }
+    .dot-NEGATIVE { background: var(--neg); }
+    .dot-NEUTRAL  { background: var(--text-muted); }
+    .headline-text {
+      font-size: 0.88rem;
+      line-height: 1.45;
+      color: var(--text-main);
+      flex: 1;
+    }
+    .headline-text a {
+      color: inherit;
+      text-decoration: none;
+    }
+    .headline-text a:hover { color: var(--accent-blue); text-decoration: underline; }
+    .headline-score {
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 5px;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+    .score-pos { background: rgba(15, 157, 99, 0.15); color: var(--pos); }
+    .score-neg { background: rgba(220, 38, 38, 0.15); color: var(--neg); }
+    .score-neu { background: var(--bg-elevated); color: var(--text-muted); }
+
+    /* ── Empty State ── */
+    .empty-state {
+      text-align: center;
+      padding: 80px 24px;
+      color: var(--text-muted);
+    }
+    .empty-state .empty-icon { font-size: 3rem; margin-bottom: 16px; }
+    .empty-state h3 { font-size: 1.1rem; font-weight: 600; color: var(--text-main); margin: 0 0 8px; }
+    .empty-state p { font-size: 0.9rem; margin: 0; }
+
+    /* ── Back nav ── */
+    .back-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-main);
+      text-decoration: none;
+      padding: 8px 16px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 50px;
+      margin-bottom: 20px;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .back-btn:hover {
+      border-color: var(--accent-blue);
+      color: var(--accent-blue);
+      transform: translateX(-4px);
+    }
+    .back-btn svg {
+      width: 16px;
+      height: 16px;
+      transition: transform 0.2s;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Navbar -->
+  <nav class="navbar">
+    <a href="/" class="brand"><span class="brand-mark">◆</span> FinSentiment</a>
+    <div class="nav-links">
+      <a href="/?tab=home" class="nav-item">Home</a>
+      <a href="/?tab=news" class="nav-item">News</a>
+      <a href="/daily" class="nav-item active">Daily Summary</a>
+      <a href="/?tab=metrics" class="nav-item">Metrics</a>
+      <a href="/?tab=corr" class="nav-item">Correlations</a>
+      <a href="/?tab=predict" class="nav-item">Signal</a>
+      <a href="/?tab=watchlist" class="nav-item">Watchlist</a>
+    </div>
+  </nav>
+
+  <div class="daily-hero">
+    <div class="daily-hero-inner">
+      <div class="daily-top-row">
+        <div>
+          <a href="/" class="back-btn">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z" clip-rule="evenodd" />
+            </svg>
+            {% if lang == 'th' %}กลับ Dashboard{% else %}Back to Dashboard{% endif %}
+          </a>
+          <div class="daily-title">
+            {% if lang == 'th' %}สรุปข่าวประจำวัน{% else %}Daily News Summary{% endif %}
+            <span style="margin-left: 12px; opacity: 0.9;">{{ date_d }}</span>
+          </div>
+        </div>
+        <div class="daily-controls">
+          <!-- Date + Asset filters in a form -->
+          <form method="get" action="/daily" id="mainForm" style="display:contents;">
+            <input type="hidden" name="asset_class" value="{{ asset_class }}">
+            <input type="hidden" name="lang" value="{{ lang }}">
+            <input 
+              type="date" 
+              name="date_d" 
+              value="{{ date_d }}"
+              min="{{ min_date }}"
+              max="{{ max_date }}"
+              class="date-select"
+              onchange="document.getElementById('mainForm').submit()"
+              title="เลือกวันที่"
+            >
+            <select name="ticker" class="ticker-select-daily" onchange="document.getElementById('mainForm').submit()">
+              <option value="ALL">All Assets</option>
+              {% for t in ticker_options %}
+              {% if t != 'ALL' %}
+              <option value="{{ t }}" {% if t == ticker %}selected{% endif %}>{{ ticker_display_names.get(t, t) }}</option>
+              {% endif %}
+              {% endfor %}
+            </select>
+          </form>
+          <!-- Language toggle -->
+          <div class="lang-toggle">
+            <a href="/daily?date_d={{ date_d }}&asset_class={{ asset_class }}&ticker={{ ticker }}&lang=en"
+               class="lang-btn {% if lang != 'th' %}active{% endif %}">EN</a>
+            <a href="/daily?date_d={{ date_d }}&asset_class={{ asset_class }}&ticker={{ ticker }}&lang=th"
+               class="lang-btn {% if lang == 'th' %}active{% endif %}">TH</a>
+          </div>
+        </div>
+      </div>
+
+      <!-- Filter chips -->
+      <div class="filter-chips-row">
+        {% for cls in available_classes %}
+        <a href="/daily?date_d={{ date_d }}&asset_class={{ cls }}&ticker={{ ticker }}&lang={{ lang }}"
+           class="chip {% if cls == asset_class %}active{% endif %}">{{ cls }}</a>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="daily-content">
+    {% if summaries %}
+    <div class="summary-grid">
+      {% for s in summaries %}
+      <div class="asset-card">
+        <!-- Card Header -->
+        <div class="asset-card-header">
+          <div style="display:flex; align-items:center; gap:6px;">
+            <span class="asset-ticker">{{ ticker_display_names.get(s.ticker, s.ticker) }}</span>
+            {% if s.ticker != ticker_display_names.get(s.ticker, s.ticker) %}
+            <span style="font-size:0.72rem; color:#94a3b8; font-weight:500;">({{ s.ticker }})</span>
+            {% endif %}
+            <span class="asset-class-badge">{{ s.asset_class }}</span>
+          </div>
+          <span class="asset-senti-badge senti-{{ s.sentiment_label }}">
+            {% if s.sentiment_label == 'POSITIVE' %}
+              {% if lang == 'th' %}เชิงบวก{% else %}Positive{% endif %} ▲
+            {% elif s.sentiment_label == 'NEGATIVE' %}
+              {% if lang == 'th' %}เชิงลบ{% else %}Negative{% endif %} ▼
+            {% else %}
+              {% if lang == 'th' %}เป็นกลาง{% else %}Neutral{% endif %} ─
+            {% endif %}
+          </span>
+        </div>
+
+        <!-- Stats Row -->
+        <div class="asset-stats">
+          <div class="stat-item">
+            {% if lang == 'th' %}ข่าวทั้งหมด{% else %}News{% endif %}:
+            <strong>{{ s.count }}</strong>
+          </div>
+          <div class="stat-item">
+            {% if lang == 'th' %}คะแนนเฉลี่ย{% else %}Avg Score{% endif %}:
+            <strong class="{% if s.avg_score > 0 %}stat-pos{% elif s.avg_score < 0 %}stat-neg{% else %}stat-neu{% endif %}">
+              {{ '%+.3f' % s.avg_score }}
+            </strong>
+          </div>
+          <div class="stat-item">
+            <span class="stat-pos">▲ {{ s.pos }}</span>
+            <span class="stat-neu">● {{ s.neu }}</span>
+            <span class="stat-neg">▼ {{ s.neg }}</span>
+          </div>
+        </div>
+
+        <!-- Headlines -->
+        <div class="headlines-list">
+          {% for h in s.headlines %}
+          <div class="headline-row">
+            <span class="headline-time">{{ h.time }}</span>
+            <span class="headline-dot dot-{{ h.label }}"></span>
+            <div class="headline-text">
+              <a href="{{ h.url }}" target="_blank" rel="noopener">{{ h.title }}</a>
+            </div>
+            <span class="headline-score {% if h.score > 0 %}score-pos{% elif h.score < 0 %}score-neg{% else %}score-neu{% endif %}">
+              {{ '%+.2f' % h.score }}
+            </span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    {% else %}
+    <div class="empty-state">
+      <div class="empty-icon">📭</div>
+      <h3>{% if lang == 'th' %}ไม่มีข่าวในวันที่เลือก{% else %}No news found for this date{% endif %}</h3>
+      <p>{% if lang == 'th' %}ลองเลือกวันที่อื่นหรือกลุ่มสินทรัพย์อื่นครับ{% else %}Try selecting a different date or filter.{% endif %}</p>
+    </div>
+    {% endif %}
+  </div>
+
+</body>
+</html>
