@@ -3,6 +3,34 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
+# Data points that trip a check but are genuinely correct, so the overall
+# PASS/FAIL stays meaningful instead of sitting on FAIL forever — a report
+# that always says FAIL trains you to ignore it, which is worse than not
+# having the check. These are excluded from the counts but still printed by
+# main() so they can never quietly disappear.
+#
+# Adding an entry here is a claim that the data is RIGHT and the check is
+# too strict for that row. It is not a way to silence a real problem.
+ACCEPTED_ANOMALIES: tuple[dict[str, str], ...] = (
+    {
+        "check": "non_positive_close_price",
+        "ticker": "CL=F",
+        "d": "2020-04-20",
+        "reason": (
+            "WTI crude futures really did settle negative (-37.63) during the "
+            "2020 storage glut. Real market event, not a vendor data error."
+        ),
+    },
+)
+
+
+def _accepted_pairs(check: str) -> tuple[list[str], list[str]]:
+    """(tickers, dates) accepted for a given check, as parallel arrays for
+    the pairwise anti-join below."""
+    rows = [a for a in ACCEPTED_ANOMALIES if a["check"] == check]
+    return [r["ticker"] for r in rows], [r["d"] for r in rows]
+
+
 def run_basic_checks(conn: Connection) -> dict[str, int]:
     dup = conn.execute(text("SELECT COUNT(*) - COUNT(DISTINCT news_hash) FROM fact_news")).scalar()
     null_close = conn.execute(text("SELECT COUNT(*) FROM fact_price_daily WHERE close IS NULL")).scalar()
@@ -31,9 +59,25 @@ def run_basic_checks(conn: Connection) -> dict[str, int]:
             SELECT asset_id, d FROM fact_sentiment_daily GROUP BY asset_id, d HAVING COUNT(*) > 1
         ) t
     """)).scalar()
-    non_positive_close = conn.execute(text("""
-        SELECT COUNT(*) FROM fact_price_daily WHERE close IS NOT NULL AND close <= 0
-    """)).scalar()
+    # Pairwise anti-join against ACCEPTED_ANOMALIES — matching on (ticker, d)
+    # together, so accepting one ticker/date pair never accidentally excuses a
+    # different ticker that happens to share the date.
+    acc_tickers, acc_dates = _accepted_pairs("non_positive_close_price")
+    non_positive_close = conn.execute(
+        text("""
+            SELECT COUNT(*)
+            FROM fact_price_daily p
+            JOIN dim_asset a ON a.asset_id = p.asset_id
+            WHERE p.close IS NOT NULL AND p.close <= 0
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM unnest(CAST(:acc_tickers AS text[]), CAST(:acc_dates AS date[]))
+                       AS acc(ticker, d)
+                  WHERE acc.ticker = a.ticker AND acc.d = p.d
+              )
+        """),
+        {"acc_tickers": acc_tickers, "acc_dates": acc_dates},
+    ).scalar()
     # A row can exist with a real close price but still have return_1d = NULL
     # (e.g. a partial-range ingest whose first row has no visible previous
     # close) — that silently breaks any rolling feature downstream, like
@@ -59,6 +103,36 @@ def run_basic_checks(conn: Connection) -> dict[str, int]:
         "non_positive_close_price": int(non_positive_close or 0),
         "price_null_return_with_close": int(null_return_with_close or 0),
     }
+
+
+def run_accepted_anomalies_report(conn: Connection) -> pd.DataFrame:
+    """The ACCEPTED_ANOMALIES rows as they currently exist in the DB, so the
+    report can show what is being excused rather than hiding it. A row that
+    no longer exists shows up with a null close, which is itself worth
+    noticing — it means the underlying data changed and the entry may be
+    stale."""
+    if not ACCEPTED_ANOMALIES:
+        return pd.DataFrame(columns=["check", "ticker", "d", "close", "reason"])
+
+    frames = []
+    for a in ACCEPTED_ANOMALIES:
+        row = conn.execute(
+            text("""
+                SELECT p.close
+                FROM fact_price_daily p
+                JOIN dim_asset a ON a.asset_id = p.asset_id
+                WHERE a.ticker = :ticker AND p.d = CAST(:d AS date)
+            """),
+            {"ticker": a["ticker"], "d": a["d"]},
+        ).fetchone()
+        frames.append({
+            "check": a["check"],
+            "ticker": a["ticker"],
+            "d": a["d"],
+            "close": float(row[0]) if row and row[0] is not None else None,
+            "reason": a["reason"],
+        })
+    return pd.DataFrame(frames)
 
 
 def run_price_anomaly_check(conn: Connection, threshold_pct: float = 40.0) -> pd.DataFrame:
@@ -150,6 +224,7 @@ def main() -> None:
 
     with engine.connect() as conn:
         basic = run_basic_checks(conn)
+        accepted = run_accepted_anomalies_report(conn)
         price_anomalies = run_price_anomaly_check(conn)
         technical_gaps = run_technical_gap_check(conn)
         coverage = run_coverage_check(conn, window_days=7)
@@ -162,6 +237,13 @@ def main() -> None:
             all_zero = False
         print(f"  {name:<28} {value:>6}  [{status}]")
     print(f"  overall: {'PASS' if all_zero else 'FAIL — investigate before trusting downstream numbers'}")
+
+    if not accepted.empty:
+        print("\n=== Accepted anomalies (excluded from the counts above) ===")
+        for _, r in accepted.iterrows():
+            close = "MISSING — entry may be stale" if r["close"] is None else f"close={r['close']}"
+            print(f"  [{r['check']}] {r['ticker']} {r['d']}  {close}")
+            print(f"      {r['reason']}")
 
     print("\n=== Price anomalies (|day-over-day change| > 40%) ===")
     if price_anomalies.empty:

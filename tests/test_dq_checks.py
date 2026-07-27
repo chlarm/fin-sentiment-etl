@@ -13,10 +13,12 @@ from __future__ import annotations
 import pandas as pd
 
 from src.dq.checks import (
+    ACCEPTED_ANOMALIES,
     run_basic_checks,
     run_price_anomaly_check,
     run_technical_gap_check,
     run_coverage_check,
+    run_accepted_anomalies_report,
 )
 
 EXPECTED_BASIC_CHECK_KEYS = {
@@ -90,6 +92,44 @@ def test_technical_gap_check_is_clean_after_run_daily_fix(engine):
         df = run_technical_gap_check(conn, window_days=30)
 
     assert df.empty, f"unexpected technical indicator gaps: {df.to_dict('records')}"
+
+
+def test_all_basic_checks_pass(engine):
+    """The report's overall PASS/FAIL is only useful if PASS is actually
+    reachable. It sat on FAIL permanently until the one genuine anomaly
+    (negative WTI close, 2020-04-20) was moved to ACCEPTED_ANOMALIES. If this
+    fails, something real broke — read the failing key rather than adding a
+    new entry to the allowlist to make it green again."""
+    with engine.connect() as conn:
+        result = run_basic_checks(conn)
+
+    failing = {k: v for k, v in result.items() if v != 0}
+    assert not failing, f"DQ checks failing: {failing}"
+
+
+def test_accepted_anomaly_rows_still_exist(engine):
+    """Guards against a stale allowlist. If an accepted row is no longer in
+    the DB, the entry is excusing nothing and should be removed — otherwise
+    it silently widens the exclusion for future data."""
+    with engine.connect() as conn:
+        df = run_accepted_anomalies_report(conn)
+
+    assert len(df) == len(ACCEPTED_ANOMALIES)
+    missing = df[df["close"].isna()]
+    assert missing.empty, f"accepted anomalies no longer present in the DB: {missing.to_dict('records')}"
+
+
+def test_accepted_anomaly_is_excluded_but_still_in_the_table(engine):
+    """The allowlist must suppress the *count*, not delete the data — the
+    negative close is real history and has to stay queryable."""
+    with engine.connect() as conn:
+        counted = run_basic_checks(conn)["non_positive_close_price"]
+        raw = conn.exec_driver_sql(
+            "SELECT COUNT(*) FROM fact_price_daily WHERE close IS NOT NULL AND close <= 0"
+        ).scalar()
+
+    assert counted == 0
+    assert raw >= 1, "the accepted negative-close row should still exist in fact_price_daily"
 
 
 def test_coverage_check_returns_expected_columns(engine):

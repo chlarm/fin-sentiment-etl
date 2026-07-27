@@ -101,3 +101,12 @@ stale by nearly two weeks.
 trips the `non_positive_close_price` DQ check. This is a real historical
 event (WTI futures settled negative during the 2020 storage glut), not a
 data error, and is deliberately retained.
+
+It is listed in `ACCEPTED_ANOMALIES` in `src/dq/checks.py`, which excludes it
+from the check *count* (so the report's overall status can reach PASS and
+therefore mean something) while still printing it in an "Accepted anomalies"
+section on every run, so it is never silently forgotten. The exclusion
+matches on the `(ticker, date)` pair, so accepting this row cannot excuse a
+different ticker that happens to share the date. Adding an entry there is a
+claim that the data is right and the check is too strict for that row — not
+a way to quiet a real problem.
