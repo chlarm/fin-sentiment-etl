@@ -159,6 +159,8 @@ TICKER_DISPLAY_NAMES: dict[str, str] = {
     "TSLA":     "Tesla",
 }
 
+VALID_TABS = frozenset({"home", "predict", "watchlist", "news", "metrics", "corr"})
+
 # Simple in-memory cache for live sentiment (refreshed by /api/live-sentiment)
 _live_sentiment_cache: dict = {"data": [], "updated_at": None}
 
@@ -205,12 +207,19 @@ def dashboard(
 ):
     """
     Main dashboard view.
-    - tab: 'home', 'news', 'metrics', 'corr', 'predict', or 'watchlist'
+    - tab: 'home', 'predict', 'watchlist', 'news', 'metrics', or 'corr'
     - ticker: active ticker to show
     - start_d/end_d: date range for filtering
     - q: free-text search — matches a ticker/company name directly, or
       falls back to a news-title search on the News tab
     """
+    # An unrecognised tab used to fall through the template's final {% else %}
+    # and silently render Correlations, which meant a typo'd or stale URL
+    # landed on the one view the committee singled out as not being a usable
+    # result. Unknown tabs now go to Home instead.
+    if tab not in VALID_TABS:
+        tab = 'home'
+
     if not start_d:
         start_date = datetime.now() - timedelta(days=90)
     else:

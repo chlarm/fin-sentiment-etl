@@ -30,13 +30,18 @@
       <span class="brand-mark">◆</span> FinSentiment
     </a>
     <div class="nav-links">
+      {# Order is deliberate: the predictive tooling (Signal, Watchlist) comes
+         first because that is the project's actual contribution. Correlations
+         sits last as supporting evidence — it was the headline once, and the
+         committee's feedback was that a correlation coefficient on its own
+         isn't a usable result. #}
       <a href="/?tab=home" class="nav-item {% if tab=='home' %}active{% endif %}" data-i18n="nav.home">Home</a>
+      <a href="/?tab=predict&ticker={{ ticker }}" class="nav-item {% if tab=='predict' %}active{% endif %}" data-i18n="nav.predict">Signal</a>
+      <a href="/?tab=watchlist" class="nav-item {% if tab=='watchlist' %}active{% endif %}" data-i18n="nav.watchlist">Watchlist</a>
       <a href="/?tab=news&ticker={{ ticker }}&start_d={{ start_date }}&end_d={{ end_date }}" class="nav-item {% if tab=='news' %}active{% endif %}" data-i18n="nav.news">News</a>
       <a href="/daily" class="nav-item" data-i18n="nav.daily_summary">Daily Summary</a>
       <a href="/?tab=metrics&ticker={{ ticker }}&start_d={{ start_date }}&end_d={{ end_date }}" class="nav-item {% if tab=='metrics' %}active{% endif %}" data-i18n="nav.metrics">Metrics</a>
       <a href="/?tab=corr&ticker={{ ticker }}&start_d={{ start_date }}&end_d={{ end_date }}" class="nav-item {% if tab=='corr' %}active{% endif %}" data-i18n="nav.correlations">Correlations</a>
-      <a href="/?tab=predict&ticker={{ ticker }}" class="nav-item {% if tab=='predict' %}active{% endif %}" data-i18n="nav.predict">Signal</a>
-      <a href="/?tab=watchlist" class="nav-item {% if tab=='watchlist' %}active{% endif %}" data-i18n="nav.watchlist">Watchlist</a>
     </div>
     <form method="get" action="/" class="navbar-search">
       <input type="hidden" name="tab" value="news">
@@ -582,7 +587,15 @@
     </div>
     {% endif %}
 
-    {% else %}
+    {% elif tab == 'corr' %}
+    <h2 style="margin-bottom: 4px;" data-i18n="corr.title">Correlation analysis</h2>
+    <div style="background: var(--bg-card); border:1px solid var(--border-color); border-left:3px solid #f0b429; border-radius:8px; padding:12px 16px; margin-bottom:16px;">
+      <div style="font-size:0.9em; font-weight:600; margin-bottom:4px;" data-i18n="corr.supporting_title">Supporting evidence — not the headline result</div>
+      <div style="font-size:0.85em; color:var(--text-muted); line-height:1.5;" data-i18n="corr.supporting_desc">
+        These are descriptive statistics. A correlation coefficient says two series moved together over a period; it does not show the relationship is stable or usable for a decision. For what the model actually predicts, how it scores on data it never trained on, and how that holds up across time windows, see the <strong>Signal</strong> tab. This table is kept because it documents the relationship the modelling is built on, with sample sizes, confidence intervals and multiple-testing correction stated openly.
+      </div>
+    </div>
+
     <div style="display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
       <div style="min-width:280px; background: var(--bg-card); padding:14px 16px; border-radius:8px; border:1px solid var(--border-color);">
         <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:6px;" data-i18n="corr.pooled_title">Pooled estimate (all tickers, fixed effects)</div>
