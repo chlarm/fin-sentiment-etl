@@ -12,6 +12,9 @@ def upsert_price_daily(conn: Connection, asset_map: dict[str, int], df: pd.DataF
         asset_id = asset_map.get(r.ticker)
         if not asset_id:
             continue
+        if pd.isna(r.close):
+            # Never write a hollow row over — or in place of — a real close price.
+            continue
         rows.append({
             "asset_id": asset_id,
             "d": r.d,
@@ -97,6 +100,96 @@ def upsert_daily_sentiment(conn: Connection, df: pd.DataFrame) -> int:
           pos_count=EXCLUDED.pos_count,
           neu_count=EXCLUDED.neu_count,
           neg_count=EXCLUDED.neg_count,
+          updated_at=now()
+        """),
+        rows,
+    )
+    return len(rows)
+
+def upsert_technical_daily(conn: Connection, asset_map: dict[str, int], df: pd.DataFrame) -> int:
+    if df.empty:
+        return 0
+
+    cols = [
+        "sma_20", "sma_50", "sma_200", "ema_12", "ema_26",
+        "macd", "macd_signal", "macd_hist", "rsi_14", "volatility_20",
+        "momentum_5", "momentum_21", "momentum_63",
+    ]
+    rows = []
+    for r in df.itertuples(index=False):
+        asset_id = asset_map.get(r.ticker)
+        if not asset_id:
+            continue
+        row = {"asset_id": asset_id, "d": r.d}
+        for c in cols:
+            v = getattr(r, c)
+            row[c] = None if pd.isna(v) else float(v)
+        rows.append(row)
+
+    if not rows:
+        return 0
+
+    set_clause = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols)
+    conn.execute(
+        text(f"""
+        INSERT INTO fact_technical_daily
+          (asset_id, d, {", ".join(cols)})
+        VALUES
+          (:asset_id, :d, {", ".join(":" + c for c in cols)})
+        ON CONFLICT (asset_id, d)
+        DO UPDATE SET
+          {set_clause},
+          updated_at=now()
+        """),
+        rows,
+    )
+    return len(rows)
+
+def upsert_fundamentals_quarterly(conn: Connection, asset_map: dict[str, int], rows_in: list[dict]) -> int:
+    if not rows_in:
+        return 0
+
+    rows = []
+    for r in rows_in:
+        asset_id = asset_map.get(r["ticker"])
+        if not asset_id:
+            continue
+        rows.append({
+            "asset_id": asset_id,
+            "fiscal_period_end": r["fiscal_period_end"],
+            "announced_d": r.get("announced_d"),
+            "revenue": r.get("revenue"),
+            "net_income": r.get("net_income"),
+            "eps_diluted": r.get("eps_diluted"),
+            "gross_margin": r.get("gross_margin"),
+            "net_margin": r.get("net_margin"),
+            "total_debt": r.get("total_debt"),
+            "stockholders_equity": r.get("stockholders_equity"),
+            "free_cash_flow": r.get("free_cash_flow"),
+        })
+
+    if not rows:
+        return 0
+
+    conn.execute(
+        text("""
+        INSERT INTO fact_fundamentals_quarterly
+          (asset_id, fiscal_period_end, announced_d, revenue, net_income, eps_diluted,
+           gross_margin, net_margin, total_debt, stockholders_equity, free_cash_flow)
+        VALUES
+          (:asset_id, :fiscal_period_end, :announced_d, :revenue, :net_income, :eps_diluted,
+           :gross_margin, :net_margin, :total_debt, :stockholders_equity, :free_cash_flow)
+        ON CONFLICT (asset_id, fiscal_period_end)
+        DO UPDATE SET
+          announced_d=EXCLUDED.announced_d,
+          revenue=EXCLUDED.revenue,
+          net_income=EXCLUDED.net_income,
+          eps_diluted=EXCLUDED.eps_diluted,
+          gross_margin=EXCLUDED.gross_margin,
+          net_margin=EXCLUDED.net_margin,
+          total_debt=EXCLUDED.total_debt,
+          stockholders_equity=EXCLUDED.stockholders_equity,
+          free_cash_flow=EXCLUDED.free_cash_flow,
           updated_at=now()
         """),
         rows,

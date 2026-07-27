@@ -5,6 +5,10 @@ import yfinance as yf
 
 def fetch_daily_prices_yahoo(tickers: list[str], end_d: date, lookback_days: int = 14) -> pd.DataFrame:
     start_d = end_d - timedelta(days=lookback_days)
+
+    # yfinance >=0.2.x manages its own curl_cffi (browser-impersonating) session
+    # internally to avoid Yahoo's bot detection / rate limiting — passing a custom
+    # requests.Session is no longer supported and raises YFDataException.
     df = yf.download(
         tickers=tickers,
         start=start_d.isoformat(),
@@ -43,4 +47,10 @@ def fetch_daily_prices_yahoo(tickers: list[str], end_d: date, lookback_days: int
     })
     out["d"] = pd.to_datetime(out["d"]).dt.date
     out = out[["ticker", "d", "open", "high", "low", "close", "adj_close", "volume"]]
+
+    # yfinance occasionally returns a row for a date with every OHLCV field NaN
+    # (transient chunk/rate-limit hiccup on multi-ticker/long-range downloads) —
+    # drop those rather than let a hollow row reach the DB.
+    out = out.dropna(subset=["close"])
+
     return out.sort_values(["ticker", "d"])

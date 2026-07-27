@@ -23,14 +23,36 @@ def ensure_assets(conn: Connection, tickers: list[str]) -> dict[str, int]:
 
     return {r.ticker: int(r.asset_id) for r in rows}
 
+def get_credibility_score(source_name: str) -> float:
+    name = source_name.lower()
+    score = 50
+    if any(x in name for x in ["bloomberg", "reuters", "financial times", "wall street journal", "wsj", "ft"]):
+        score = 95
+    elif any(x in name for x in ["cnbc", "marketwatch"]):
+        score = 85
+    elif any(x in name for x in ["yahoo finance", "globe and mail", "the street", "thestreet", "investopedia"]):
+        score = 80
+    elif "investing.com" in name:
+        score = 70
+    elif "seeking alpha" in name:
+        score = 65
+    elif any(x in name for x in ["motley fool", "coincentral", "fxleaders"]):
+        score = 60
+    
+    return round(score / 10.0, 1)
+
 def ensure_source(conn: Connection, source_name: str, source_type: str, base_url: str | None) -> int:
+    cred = get_credibility_score(source_name)
     conn.execute(
         text("""
-        INSERT INTO dim_source (source_name, source_type, base_url)
-        VALUES (:n, :t, :u)
-        ON CONFLICT (source_name, source_type) DO NOTHING
+        INSERT INTO dim_source (source_name, source_type, base_url, credibility_score)
+        VALUES (:n, :t, :u, :c)
+        ON CONFLICT (source_name, source_type) 
+        DO UPDATE SET 
+            credibility_score = EXCLUDED.credibility_score,
+            base_url = COALESCE(dim_source.base_url, EXCLUDED.base_url)
         """),
-        {"n": source_name, "t": source_type, "u": base_url},
+        {"n": source_name, "t": source_type, "u": base_url, "c": cred},
     )
     row = conn.execute(
         text("SELECT source_id FROM dim_source WHERE source_name=:n AND source_type=:t"),

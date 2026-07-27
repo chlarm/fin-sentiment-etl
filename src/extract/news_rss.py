@@ -45,9 +45,14 @@ def fetch_news_rss_for_ticker(
     rss_template: str,
     lookback_hours: int,
     now_utc: datetime,
+    trusted_sources: tuple[str, ...] | None = None,
     debug: bool = False,
 ) -> list[NewsItem]:
-    feed_url = rss_template.format(ticker=ticker, ticker_lower=ticker.lower())
+    # If the template is already a fully-built URL (no {ticker}), use it as-is
+    if "{ticker}" in rss_template or "{ticker_lower}" in rss_template:
+        feed_url = rss_template.format(ticker=ticker, ticker_lower=ticker.lower())
+    else:
+        feed_url = rss_template
     headers = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari",
     "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
@@ -72,10 +77,23 @@ def fetch_news_rss_for_ticker(
             continue
         if published_utc < cutoff:
             continue
+        
+        entry_source = getattr(e, "source", {})
+        pub_title = entry_source.get("title", "")
+        pub_url = entry_source.get("href", "")
+
+        if trusted_sources:
+            is_trusted = any(ts in pub_title.lower() for ts in trusted_sources)
+            if not is_trusted:
+                continue
+
+        actual_source_name = pub_title if pub_title else source_name
+        actual_base_url = pub_url if pub_url else base_url
+
         kept.append(NewsItem(
             ticker=ticker,
-            source_name=source_name,
-            base_url=base_url,
+            source_name=actual_source_name,
+            base_url=actual_base_url,
             published_at_utc=published_utc,
             title=title,
             url=link,
