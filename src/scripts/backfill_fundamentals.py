@@ -49,6 +49,8 @@ def main() -> None:
             skipped.append(t)
             print(f"  {t:10s} no statement data (likely index/forex/commodity/crypto) — skipped")
         else:
+            for r in rows:
+                r["source"] = "yfinance"
             with engine.begin() as conn:
                 n = upsert_fundamentals_quarterly(conn, asset_map, rows)
             total_rows += n

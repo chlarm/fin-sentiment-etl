@@ -109,9 +109,20 @@ CREATE TABLE IF NOT EXISTS fact_fundamentals_quarterly (
   total_debt           NUMERIC,
   stockholders_equity  NUMERIC,
   free_cash_flow       NUMERIC,
+  -- Where the row came from, so a mixed table stays auditable and one
+  -- provider can be swapped out without guessing which rows are whose:
+  --   'yfinance'      quarterly statements via yfinance (5-7 quarters/ticker,
+  --                   period ends rounded to month end)
+  --   'edgar'         as-filed XBRL facts from SEC companyfacts
+  --   'edgar_derived' Q4 computed as FY minus Q1+Q2+Q3, because a 10-K
+  --                   reports the full year and most filers never tag a
+  --                   standalone Q4. Arithmetic on reported figures, but
+  --                   separated so it can be excluded from analysis.
+  source               TEXT,
   updated_at           TIMESTAMPTZ DEFAULT now(),
   PRIMARY KEY (asset_id, fiscal_period_end)
 );
+ALTER TABLE fact_fundamentals_quarterly ADD COLUMN IF NOT EXISTS source TEXT;
 CREATE INDEX IF NOT EXISTS idx_fact_fundamentals_announced_d ON fact_fundamentals_quarterly(announced_d);
 
 -- User's watchlist: tickers to monitor for signal flips on the web dashboard.

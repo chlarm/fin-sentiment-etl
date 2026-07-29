@@ -22,3 +22,6 @@ local_data.sql
 airflow-stack/logs/
 airflow-stack/plugins/
 airflow-stack/config/
+
+# Local DB dumps — data, not source (and can contain the full news corpus)
+backups/

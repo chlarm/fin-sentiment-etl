@@ -166,6 +166,7 @@ def upsert_fundamentals_quarterly(conn: Connection, asset_map: dict[str, int], r
             "total_debt": r.get("total_debt"),
             "stockholders_equity": r.get("stockholders_equity"),
             "free_cash_flow": r.get("free_cash_flow"),
+            "source": r.get("source"),
         })
 
     if not rows:
@@ -175,10 +176,10 @@ def upsert_fundamentals_quarterly(conn: Connection, asset_map: dict[str, int], r
         text("""
         INSERT INTO fact_fundamentals_quarterly
           (asset_id, fiscal_period_end, announced_d, revenue, net_income, eps_diluted,
-           gross_margin, net_margin, total_debt, stockholders_equity, free_cash_flow)
+           gross_margin, net_margin, total_debt, stockholders_equity, free_cash_flow, source)
         VALUES
           (:asset_id, :fiscal_period_end, :announced_d, :revenue, :net_income, :eps_diluted,
-           :gross_margin, :net_margin, :total_debt, :stockholders_equity, :free_cash_flow)
+           :gross_margin, :net_margin, :total_debt, :stockholders_equity, :free_cash_flow, :source)
         ON CONFLICT (asset_id, fiscal_period_end)
         DO UPDATE SET
           announced_d=EXCLUDED.announced_d,
@@ -190,6 +191,7 @@ def upsert_fundamentals_quarterly(conn: Connection, asset_map: dict[str, int], r
           total_debt=EXCLUDED.total_debt,
           stockholders_equity=EXCLUDED.stockholders_equity,
           free_cash_flow=EXCLUDED.free_cash_flow,
+          source=EXCLUDED.source,
           updated_at=now()
         """),
         rows,
