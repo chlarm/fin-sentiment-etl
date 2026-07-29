@@ -74,27 +74,53 @@ with DAG(
     catchup=False,
     default_args={
         "owner": "you",
-        "retries": 3,
+        # Two, not three. Every failure so far repeated identically on retry,
+        # so extra attempts only delayed the alert and burned hours.
+        "retries": 2,
         "retry_delay": timedelta(minutes=5),
-        # Without this, a hung run just sits there until the scheduler
-        # eventually SIGTERMs it — observed on 2026-07-18/19/24, where each
-        # attempt hung inside the FinBERT pipeline's Hugging Face hub call
-        # (the model itself is cached; it's the revision check that stalls on
-        # a bad network) and a single DAG run burned ~3 hours across retries.
-        # A full 30-ticker run takes a few minutes, so 30m is generous while
-        # still failing fast enough to leave room for the retries.
-        "execution_timeout": timedelta(minutes=30),
         "on_failure_callback": on_failure_callback,
     },
     tags=["fin", "etl"],
 ) as dag:
 
-    run_etl = BashOperator(
-        task_id="run_daily_etl",
-        bash_command=(
-            "cd /opt/airflow/project && "
-            "set -a && source .env.airflow && set +a && "
-            "PYTHONPATH=/opt/airflow/project "
-            "python -m src.etl.run_daily"
-        ),
-    )
+    def etl_stage(task_id: str, stage: str, timeout_minutes: int) -> BashOperator:
+        """One ETL stage as its own task.
+
+        `python -u` is not cosmetic. Python buffers stdout when it is a pipe,
+        so when a task was SIGTERMed the entire log was discarded unwritten:
+        the runs that failed nightly from 2026-07-24 onward left nothing behind
+        but a Hugging Face warning on stderr, and there was no way to tell
+        which stage had even been reached. Unbuffered output is what makes the
+        next failure diagnosable.
+
+        Timeouts are per stage and sized against measured runtime — the full
+        pipeline takes about a minute for 30 tickers — so a stall is caught in
+        minutes rather than after burning the whole night across retries.
+        """
+        return BashOperator(
+            task_id=task_id,
+            bash_command=(
+                "cd /opt/airflow/project && "
+                "set -a && source .env.airflow && set +a && "
+                "PYTHONPATH=/opt/airflow/project "
+                f"python -u -m src.etl.run_daily --stage {stage}"
+            ),
+            execution_timeout=timedelta(minutes=timeout_minutes),
+        )
+
+    # Prices and news are deliberately independent. News is the half that
+    # cannot be recovered — Google News RSS has no archive, so a day not
+    # fetched is gone — while prices and technical indicators can always be
+    # rebuilt from history. Running them as one task meant a stall in the slow,
+    # model-loading half also rolled back the fast, reliable one.
+    fetch_prices = etl_stage("fetch_prices", "prices", timeout_minutes=15)
+    fetch_news = etl_stage("fetch_news", "news", timeout_minutes=20)
+
+    # Reports on the database rather than on this run, so the summary is still
+    # accurate when one of the two above failed. Runs regardless of their
+    # outcome for exactly that reason: a failed night is when the report
+    # matters most.
+    data_quality = etl_stage("data_quality", "dq", timeout_minutes=10)
+    data_quality.trigger_rule = "all_done"
+
+    [fetch_prices, fetch_news] >> data_quality

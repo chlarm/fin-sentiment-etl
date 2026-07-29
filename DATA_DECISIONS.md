@@ -252,3 +252,53 @@ doubled change for the next. Now `fill_method=None`, and infinities are
 converted to NaN — Tesla genuinely reported diluted EPS of 0.00 for the
 quarter ending 2013-03-31, so the growth rate there is undefined rather than
 erroneous.
+
+---
+
+## 2026-07-29 — Daily ETL split into stages; nightly failures fixed
+
+**What was happening**: every scheduled DAG run failed from 2026-07-24 to
+2026-07-28. Prices fell two trading days behind while news kept arriving, and
+no alert reached anyone for five days.
+
+**What made it undiagnosable**: the task ran `python -m src.etl.run_daily`
+without `-u`. Python buffers stdout when it is a pipe, so when the process was
+SIGTERMed the entire log was discarded unwritten — the failed runs left behind
+one Hugging Face warning on stderr and nothing else, with no way to tell which
+stage had even been reached. Measured against that, the runtime assumption in
+the old comment ("a full 30-ticker run takes a few minutes") was never
+checked. It is 52 seconds end to end.
+
+**Structural fix**: `run_daily.py` now has three stages — `prices`, `news`,
+`dq` — each committing its own transaction and running as its own Airflow
+task, with `prices` and `news` in parallel and `dq` on `trigger_rule=all_done`
+so the report still goes out on a failed night. Previously all of it shared
+one transaction and one task, which coupled failures that have nothing to do
+with each other: news needs FinBERT and 30 RSS feeds and is the slow, fragile
+half, while prices are fast and reliable — and yet a stall in the former rolled
+back the latter. The asymmetry matters because news cannot be refetched (Google
+News RSS has no archive) while prices and technical indicators can always be
+rebuilt from stored history.
+
+**`smtplib` had no timeout** (`src/alerting.py`): `SMTP_SSL` blocks forever on
+a socket that connects but never replies. That call sits at the very end of
+the ETL, after everything is committed, so a hang there fails a run whose work
+had already succeeded — and it is the alerting path itself, the thing meant to
+report trouble. Now 30 seconds, with tests.
+
+**Timeouts and retries**: per-stage timeouts sized against measured runtime
+(15/20/10 minutes against 43s/2m36s/9s observed) instead of one 30-minute
+budget for everything, and retries cut from 3 to 2 — every failure so far
+repeated identically on retry, so extra attempts only delayed the alert.
+
+**Verified**: manual run `p0_verify_1785301207` succeeded on all three tasks;
+logs are now readable; the summary email sent. Prices, news, sentiment and
+technical indicators are all current to 2026-07-29.
+
+**Not established**: the original hang was never reproduced. Running each
+stage by hand inside the worker container succeeded, the FinBERT model loads
+in 6.3s there, and both huggingface.co and smtp.gmail.com are reachable from
+it in under a second. The unbounded SMTP call is the best-supported
+explanation — it would leave a committed database and a failed task, which is
+what was observed — but it is not proven, which is precisely why the logging
+fix matters more than the diagnosis.

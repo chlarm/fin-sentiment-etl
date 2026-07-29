@@ -1,3 +1,29 @@
+"""
+Daily ETL, split into independent stages.
+
+Why stages. Everything used to run inside one transaction and one Airflow
+task, which coupled failures that have nothing to do with each other: loading
+FinBERT and fetching 30 RSS feeds is slow and flaky, price ingestion is fast
+and reliable, and yet a stall in the former rolled back the latter. Worse, the
+one thing that must never be lost is news — Google News RSS has no archive, so
+a day not fetched is gone permanently — while prices and technical indicators
+can always be recomputed from history.
+
+Each stage now commits on its own and can run as its own Airflow task:
+
+    prices  fetch OHLCV, repair return_1d from full history, rebuild
+            technical indicators. No model, no network beyond the price feed.
+    news    fetch RSS, score with FinBERT, rebuild the daily sentiment index.
+    dq      run the data-quality checks against whatever is in the DB and
+            email the summary.
+
+Running with no --stage does all three in order, so local use is unchanged.
+
+Usage:
+    python -m src.etl.run_daily
+    python -m src.etl.run_daily --stage prices
+    python -m src.etl.run_daily --stage news --date 2026-07-29
+"""
 from __future__ import annotations
 import argparse
 from datetime import timedelta
@@ -20,9 +46,14 @@ from src.scripts.backfill_price_returns import recompute_returns_from_db
 from src.dq.checks import run_basic_checks, run_coverage_check, run_technical_gap_check
 from src.alerting import send_email_alert
 
+STAGES = ("prices", "news", "dq")
+
+
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--date", type=str, default=None, help="Run date in YYYY-MM-DD (default: today in PIPELINE_TZ)")
+    p.add_argument("--stage", choices=STAGES, default=None,
+                   help="Run a single stage. Default: all of them, in order.")
     return p.parse_args()
 
 def _fetch_prices(settings: Settings, run_d):
@@ -49,57 +80,14 @@ def _fetch_prices(settings: Settings, run_d):
 
     return pd.DataFrame()
 
-def main() -> None:
-    settings = Settings()
-    args = _parse_args()
 
-    tz = pendulum.timezone(settings.pipeline_tz)
-    run_d = pendulum.parse(args.date).date() if args.date else pendulum.now(tz).date()
-
-    # dim_date window
-    start_d = run_d - timedelta(days=60)
-    end_d = run_d
-
-    engine = get_engine(settings)
-    print("Loading FinBERT Model...")
-    scorer = FinbertScorer()
-    print("Model Loaded!")
-
-    # 1) Extract prices
+def stage_prices(settings: Settings, engine, run_d) -> None:
+    """Prices, return repair and technical indicators. No model needed."""
     price_raw = _fetch_prices(settings, run_d)
     price_feat = add_return_features(price_raw)
 
-    # 2) Extract news (last N hours from now UTC)
-    now_utc = pendulum.now("UTC")
-    news_items = []
-    search_terms = settings.ticker_search_terms
-
-    # Build a custom RSS template that accepts a `search_q` param
-    def _news_url(ticker: str) -> str:
-        """Return the RSS URL for a ticker, using override search terms when available."""
-        search_q = search_terms.get(ticker, ticker)
-        # URL-encode spaces with %20
-        q_encoded = search_q.replace(" ", "%20")
-        # Use the configured template but override the search query
-        return (
-            "https://news.google.com/rss/search"
-            f"?q={q_encoded}%20market&hl=en-US&gl=US&ceid=US:en"
-        )
-
-    for t in settings.tickers:
-        feed_url = _news_url(t)
-        items = fetch_news_rss_for_ticker(
-            ticker=t,
-            rss_template=feed_url,          # pass the resolved URL directly
-            lookback_hours=settings.lookback_hours,
-            now_utc=now_utc,
-            trusted_sources=settings.trusted_news_sources,
-            debug=settings.news_debug,
-        )
-        news_items.extend(items)
-
     with engine.begin() as conn:
-        ensure_dim_dates(conn, start_d, end_d)
+        ensure_dim_dates(conn, run_d - timedelta(days=60), run_d)
         asset_map = ensure_assets(conn, list(settings.tickers))
 
         prices_cnt = upsert_price_daily(conn, asset_map, price_feat)
@@ -128,6 +116,49 @@ def main() -> None:
         )
         tech_df = add_technical_indicators(tech_price_df)
         technical_cnt = upsert_technical_daily(conn, asset_map, tech_df)
+
+    print(f"[prices] upserted {prices_cnt} price rows, {technical_cnt} technical rows")
+
+
+def stage_news(settings: Settings, engine, run_d) -> None:
+    """RSS, FinBERT scoring and the daily sentiment index.
+
+    Kept apart from prices because this is the slow, fragile half — the model
+    load alone can stall on a Hugging Face hub call — and because it is the
+    half whose data cannot be recovered if a day is missed.
+    """
+    print("Loading FinBERT Model...")
+    scorer = FinbertScorer()
+    print("Model Loaded!")
+
+    now_utc = pendulum.now("UTC")
+    search_terms = settings.ticker_search_terms
+
+    def _news_url(ticker: str) -> str:
+        """Return the RSS URL for a ticker, using override search terms when available."""
+        search_q = search_terms.get(ticker, ticker)
+        q_encoded = search_q.replace(" ", "%20")
+        return (
+            "https://news.google.com/rss/search"
+            f"?q={q_encoded}%20market&hl=en-US&gl=US&ceid=US:en"
+        )
+
+    news_items = []
+    for t in settings.tickers:
+        items = fetch_news_rss_for_ticker(
+            ticker=t,
+            rss_template=_news_url(t),
+            lookback_hours=settings.lookback_hours,
+            now_utc=now_utc,
+            trusted_sources=settings.trusted_news_sources,
+            debug=settings.news_debug,
+        )
+        news_items.extend(items)
+    print(f"[news] fetched {len(news_items)} items across {len(settings.tickers)} tickers")
+
+    with engine.begin() as conn:
+        ensure_dim_dates(conn, run_d - timedelta(days=60), run_d)
+        asset_map = ensure_assets(conn, list(settings.tickers))
 
         news_rows = []
         for item in news_items:
@@ -159,7 +190,6 @@ def main() -> None:
         news_attempted = insert_news(conn, news_rows)
 
         # Build daily sentiment index from DB (last 7 days)
-        window_start = run_d - timedelta(days=7)
         df_news = pd.read_sql(
             """
             SELECT asset_id, published_d, sentiment_score, sentiment_label
@@ -167,25 +197,41 @@ def main() -> None:
             WHERE published_d BETWEEN %(s)s AND %(e)s
             """,
             conn,
-            params={"s": window_start, "e": run_d},
+            params={"s": run_d - timedelta(days=7), "e": run_d},
         )
-        si = build_daily_sentiment_index(df_news)
-        si_cnt = upsert_daily_sentiment(conn, si)
+        si_cnt = upsert_daily_sentiment(conn, build_daily_sentiment_index(df_news))
 
+    print(f"[news] attempted {news_attempted} inserts (dedup by news_hash), "
+          f"{si_cnt} sentiment-index rows")
+
+
+def stage_dq(settings: Settings, engine, run_d) -> None:
+    """Checks and the summary email.
+
+    Reports what is actually in the database rather than what this process
+    just did, so the summary stays truthful when a stage was skipped, failed,
+    or ran in a separate Airflow task.
+    """
+    with engine.begin() as conn:
         checks = run_basic_checks(conn)
         coverage = run_coverage_check(conn, window_days=7)
         technical_gaps = run_technical_gap_check(conn, window_days=30)
+        freshness = pd.read_sql(
+            """
+            SELECT (SELECT max(d) FROM fact_price_daily)       AS latest_price,
+                   (SELECT max(published_d) FROM fact_news)    AS latest_news,
+                   (SELECT max(d) FROM fact_sentiment_daily)   AS latest_sentiment,
+                   (SELECT max(d) FROM fact_technical_daily)   AS latest_technical
+            """,
+            conn,
+        ).iloc[0]
 
     checks_passed = all(v == 0 for v in checks.values())
     thin_coverage = coverage[coverage["zero_news_days"] >= coverage["trading_days"]] if not coverage.empty else coverage
 
     print("\n=== ETL DONE ===")
     print(f"run_date={run_d} tz={settings.pipeline_tz}")
-    print(f"price_source={settings.price_source} tickers={list(settings.tickers)}")
-    print(f"prices_upsert_rows={prices_cnt}")
-    print(f"news_attempted_inserts={news_attempted} (dedup by news_hash in DB)")
-    print(f"sentiment_daily_upsert_rows={si_cnt}")
-    print(f"technical_indicator_upsert_rows={technical_cnt}")
+    print(f"latest in DB: {freshness.to_dict()}")
     print(f"dq_checks={checks} ({'Pass' if checks_passed else 'Fail'})")
     if not thin_coverage.empty:
         print(f"news_coverage: {len(thin_coverage)} ticker(s) with ZERO real news in the last 7 days: "
@@ -193,16 +239,35 @@ def main() -> None:
     if not technical_gaps.empty:
         print(f"technical_indicator_gaps (last 30d): {technical_gaps.set_index('ticker')['missing_technical_days'].to_dict()}")
 
-    msg = (
+    stale_price = freshness["latest_price"] is None or (run_d - freshness["latest_price"]).days > 4
+    status = "⚠️ ETL STALE" if (stale_price or not checks_passed) else "✅ ETL SUCCESS ✅"
+
+    send_email_alert(status, (
         f"Date: {run_d}\n"
-        f"Prices Rows: {prices_cnt}\n"
-        f"News Rows: {news_attempted}\n"
-        f"Indices Rows: {si_cnt}\n"
+        f"Latest price: {freshness['latest_price']}\n"
+        f"Latest news: {freshness['latest_news']}\n"
+        f"Latest sentiment: {freshness['latest_sentiment']}\n"
+        f"Latest technical: {freshness['latest_technical']}\n"
         f"DQ Checks: {'Pass' if checks_passed else 'Fail'} ({checks})\n"
-        f"Tickers with zero real news (last 7d): {thin_coverage['ticker'].tolist() if not thin_coverage.empty else 'none'}\n"
-        f"Technical indicator gaps (last 30d): {technical_gaps['ticker'].tolist() if not technical_gaps.empty else 'none'}"
-    )
-    send_email_alert("✅ ETL SUCCESS ✅", msg)
+        f"Tickers with zero real news (last 7d): "
+        f"{thin_coverage['ticker'].tolist() if not thin_coverage.empty else 'none'}\n"
+        f"Technical indicator gaps (last 30d): "
+        f"{technical_gaps['ticker'].tolist() if not technical_gaps.empty else 'none'}"
+    ))
+
+
+def main() -> None:
+    settings = Settings()
+    args = _parse_args()
+
+    tz = pendulum.timezone(settings.pipeline_tz)
+    run_d = pendulum.parse(args.date).date() if args.date else pendulum.now(tz).date()
+    engine = get_engine(settings)
+
+    runners = {"prices": stage_prices, "news": stage_news, "dq": stage_dq}
+    for name in ([args.stage] if args.stage else STAGES):
+        print(f"\n>>> stage: {name}")
+        runners[name](settings, engine, run_d)
 
 
 if __name__ == "__main__":
