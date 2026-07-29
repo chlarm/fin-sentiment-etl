@@ -217,7 +217,9 @@ def _first_reported(
 
 
 def _series_by_priority(
-    facts: dict, candidates: list[str], unit: str, span: str | None, prefer: str = "earliest"
+    facts: dict, candidates: list[str], unit: str, span: str | None,
+    prefer: str = "earliest", skip_zero: bool = False,
+    promote_much_larger: bool = False,
 ) -> tuple[dict[date, tuple[float, date, date | None]], list[str]]:
     """Build one series from candidate tags in PRIORITY order: for each period
     end, the first candidate that reports it wins.
@@ -246,7 +248,35 @@ def _series_by_priority(
             continue
         contributed = False
         for end, val in _first_reported(rows, span, prefer).items():
-            if end not in series:
+            if skip_zero and val[0] == 0:
+                # A tag present but zero means "this company does not report
+                # that line", not "this company earned nothing". Oracle's
+                # 10-Qs carry SalesRevenueNet = 0 for three quarters of FY2009
+                # while stating the real 5.45bn under Revenues; because
+                # SalesRevenueNet ranks higher, the zero would win and then
+                # divide into every growth rate downstream as infinity.
+                continue
+            existing = series.get(end)
+            if existing is None:
+                series[end] = val
+                contributed = True
+            elif promote_much_larger and abs(val[0]) > abs(existing[0]) * SUBLINE_RATIO:
+                # The preferred tag turned out to be a sub-line, not the top
+                # line. Oracle tags SalesRevenueNet with 458,000,000 for the
+                # quarter ending 2010-02-28 — one product line — while stating
+                # total revenue of 6,404,000,000 under Revenues, which ranks
+                # lower. Ordering alone cannot fix this: for Apple and Amazon
+                # SalesRevenueNet *is* the total.
+                #
+                # The threshold separates that from definitional nuance. Tags
+                # that differ over what belongs in revenue differ by a few
+                # percent (Walmart's membership fees, Exxon's other income) and
+                # must keep the preferred tag; JPMorgan's Revenues exceeds
+                # RevenuesNetOfInterestExpense by 14%, and the bank measure has
+                # to win. A sub-line is off by multiples. Only ORCL trips this
+                # across the 21 equities, in 4 of its 59 quarters.
+                print(f"[edgar] preferring {name} ({val[0]:,.0f}) over the higher-priority "
+                      f"tag ({existing[0]:,.0f}) for period ending {end}")
                 series[end] = val
                 contributed = True
         if contributed:
@@ -288,15 +318,56 @@ def _drop_mistagged_quarters(
     for fy_end, (fy_val, _f, fy_start) in annual.items():
         if fy_start is None or not fy_val:
             continue
-        limit = abs(fy_val) * MISTAGGED_QUARTER_SHARE
         for q_end in [d for d in quarterly if fy_start < d <= fy_end]:
-            if abs(quarterly[q_end][0]) > limit:
+            # Near-EQUALITY, not "large share of the year". A one-sided
+            # threshold also fires when the quarter merely exceeds the annual
+            # figure, which happens when the annual figure is itself the wrong
+            # line — and then the guard deletes the good quarter and keeps the
+            # bad year. That is exactly what it did to three sound Oracle
+            # quarters of FY2010 before this was made two-sided.
+            if abs(abs(quarterly[q_end][0]) / abs(fy_val) - 1.0) <= 1.0 - MISTAGGED_QUARTER_SHARE:
                 print(f"[edgar] {ticker}: dropping revenue for quarter ending {q_end} — "
                       f"{quarterly[q_end][0]:,.0f} is {quarterly[q_end][0] / fy_val:.0%} of "
                       f"FY{fy_end.year} ({fy_val:,.0f}); mis-tagged annual figure")
                 del quarterly[q_end]
                 dropped += 1
     return dropped
+
+
+# Consecutive real quarters are ~91 days apart, so anything this close is the
+# same quarter under two dates rather than two quarters.
+SAME_QUARTER_DAYS = 5
+
+# A candidate tag this much larger than the preferred one is reporting a
+# different, broader line rather than the same line under another name.
+SUBLINE_RATIO = 1.5
+
+
+def _dedupe_near_period_ends(ticker: str, rows: list[dict]) -> list[dict]:
+    """Collapse one quarter that was filed under two slightly different ends.
+
+    NVIDIA's quarter ending 2010-08-01 is also tagged as ending 2010-07-31 in
+    a later filing, with identical revenue and net income. Both survive as
+    separate rows because the primary key is the period end, which silently
+    double-counts that quarter in any aggregate.
+
+    The row kept is the one announced first, i.e. the date the company used at
+    the time; the stray one here comes from a 2012 filing re-dating a 2010
+    quarter by a day.
+    """
+    kept: list[dict] = []
+    for row in sorted(rows, key=lambda r: r["fiscal_period_end"]):
+        prev = kept[-1] if kept else None
+        if prev is not None and (row["fiscal_period_end"] - prev["fiscal_period_end"]).days <= SAME_QUARTER_DAYS:
+            loser, winner = (prev, row) if row["announced_d"] < prev["announced_d"] else (row, prev)
+            print(f"[edgar] {ticker}: quarters ending {prev['fiscal_period_end']} and "
+                  f"{row['fiscal_period_end']} are the same quarter; keeping "
+                  f"{winner['fiscal_period_end']} (announced {winner['announced_d']}), "
+                  f"dropping {loser['fiscal_period_end']}")
+            kept[-1] = winner
+            continue
+        kept.append(row)
+    return kept
 
 
 def _margins(revenue: float | None, gross_profit: float | None, net_income: float | None) -> tuple[float | None, float | None]:
@@ -508,8 +579,16 @@ def fetch_quarterly_fundamentals_edgar(
     ann: dict[str, dict[date, tuple[float, date, date | None]]] = {}
     tags_used: dict[str, list[str]] = {}
     for field, candidates in DURATION_CONCEPTS.items():
-        dur[field], tags_used[field] = _series_by_priority(gaap, candidates, "USD", span="quarter")
-        ann[field], _ = _series_by_priority(gaap, candidates, "USD", span="annual")
+        # Revenue anchors the period and can never legitimately be zero for
+        # these companies, so a zero there falls through to the next tag.
+        # Net income and free cash flow genuinely can be zero.
+        zero_means_missing = field == "revenue"
+        dur[field], tags_used[field] = _series_by_priority(
+            gaap, candidates, "USD", span="quarter",
+            skip_zero=zero_means_missing, promote_much_larger=zero_means_missing)
+        ann[field], _ = _series_by_priority(
+            gaap, candidates, "USD", span="annual",
+            skip_zero=zero_means_missing, promote_much_larger=zero_means_missing)
 
     # prefer="latest" only for per-share figures — see _first_reported.
     eps, tags_used["eps_diluted"] = _series_by_priority(
@@ -564,9 +643,8 @@ def fetch_quarterly_fundamentals_edgar(
 
     if derive_q4:
         out.extend(_derive_q4_rows(ticker, gaap, dur, ann, inst))
-        out.sort(key=lambda r: r["fiscal_period_end"])
 
-    return out
+    return _dedupe_near_period_ends(ticker, out)
 
 
 def _parse_args() -> argparse.Namespace:

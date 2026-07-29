@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import date
 
 from src.extract.fundamentals_edgar import (
+    _dedupe_near_period_ends,
     _drop_mistagged_quarters,
     _first_reported,
     _series_by_priority,
@@ -122,3 +123,85 @@ def test_a_genuinely_dominant_quarter_is_kept():
     annual = {date(2012, 12, 31): (413_256.0, date(2013, 3, 7), date(2012, 1, 1))}
     assert _drop_mistagged_quarters("TSLA", quarterly, annual) == 0
     assert date(2012, 12, 31) in quarterly
+
+
+def test_one_quarter_filed_under_two_dates_is_collapsed():
+    """NVIDIA's quarter ending 2010-08-01 is re-dated 2010-07-31 by a 2012
+    filing, with identical figures. Two rows would double-count it."""
+    rows = [
+        {"fiscal_period_end": date(2010, 8, 1), "announced_d": date(2010, 8, 30), "revenue": 811_208},
+        {"fiscal_period_end": date(2010, 7, 31), "announced_d": date(2012, 3, 13), "revenue": 811_208},
+        {"fiscal_period_end": date(2010, 10, 31), "announced_d": date(2010, 12, 7), "revenue": 843_912},
+    ]
+    out = _dedupe_near_period_ends("NVDA", rows)
+    assert [r["fiscal_period_end"] for r in out] == [date(2010, 8, 1), date(2010, 10, 31)]
+
+
+def test_adjacent_real_quarters_are_left_alone():
+    """Quarters are ~91 days apart; the guard must not touch them."""
+    rows = [
+        {"fiscal_period_end": date(2020, 3, 31), "announced_d": date(2020, 4, 30), "revenue": 1},
+        {"fiscal_period_end": date(2020, 6, 30), "announced_d": date(2020, 7, 30), "revenue": 2},
+    ]
+    assert len(_dedupe_near_period_ends("X", rows)) == 2
+
+
+def test_a_sub_line_does_not_beat_the_real_top_line():
+    """Oracle tags SalesRevenueNet with one product line (458m) for the quarter
+    ending 2010-02-28 while stating total revenue of 6,404m under Revenues,
+    which ranks lower. Priority order alone cannot fix this: for Apple and
+    Amazon, SalesRevenueNet *is* the total."""
+    facts = {
+        "SalesRevenueNet": {
+            "units": {"USD": [_fact("2009-12-01", "2010-02-28", 458_000_000, "2010-03-29")]}
+        },
+        "Revenues": {
+            "units": {"USD": [_fact("2009-12-01", "2010-02-28", 6_404_000_000, "2010-03-29")]}
+        },
+    }
+    series, _ = _series_by_priority(
+        facts, ["SalesRevenueNet", "Revenues"], "USD", span="quarter",
+        promote_much_larger=True)
+    assert series[date(2010, 2, 28)][0] == 6_404_000_000
+
+
+def test_a_definitional_difference_keeps_the_preferred_tag():
+    """JPMorgan's Revenues exceeds RevenuesNetOfInterestExpense by 14%, and the
+    bank measure must still win. Only multiples indicate a sub-line."""
+    facts = {
+        "RevenuesNetOfInterestExpense": {
+            "units": {"USD": [_fact("2020-01-01", "2020-03-31", 29_000, "2020-04-14")]}
+        },
+        "Revenues": {
+            "units": {"USD": [_fact("2020-01-01", "2020-03-31", 33_000, "2020-04-14")]}
+        },
+    }
+    series, _ = _series_by_priority(
+        facts, ["RevenuesNetOfInterestExpense", "Revenues"], "USD", span="quarter",
+        promote_much_larger=True)
+    assert series[date(2020, 3, 31)][0] == 29_000
+
+
+def test_zero_revenue_falls_through_to_the_next_tag():
+    """A tag present but zero means the company does not report that line."""
+    facts = {
+        "SalesRevenueNet": {
+            "units": {"USD": [_fact("2008-12-01", "2009-02-28", 0, "2010-03-29")]}
+        },
+        "Revenues": {
+            "units": {"USD": [_fact("2008-12-01", "2009-02-28", 5_453_000_000, "2010-03-29")]}
+        },
+    }
+    series, _ = _series_by_priority(
+        facts, ["SalesRevenueNet", "Revenues"], "USD", span="quarter", skip_zero=True)
+    assert series[date(2009, 2, 28)][0] == 5_453_000_000
+
+
+def test_a_wrong_annual_figure_cannot_delete_a_good_quarter():
+    """Oracle's FY2010 total is tagged 2.29bn, the wrong line. The quarter of
+    5.86bn is correct and must survive: the guard looks for a quarter that
+    EQUALS its year, not one that merely exceeds it."""
+    quarterly = {date(2009, 11, 30): (5_858_000_000.0, date(2009, 12, 22), date(2009, 9, 1))}
+    annual = {date(2010, 5, 31): (2_290_000_000.0, date(2010, 7, 1), date(2009, 6, 1))}
+    assert _drop_mistagged_quarters("ORCL", quarterly, annual) == 0
+    assert date(2009, 11, 30) in quarterly

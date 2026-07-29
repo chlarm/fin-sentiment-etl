@@ -1,4 +1,5 @@
 from __future__ import annotations
+import numpy as np
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -59,10 +60,22 @@ def build_fundamentals_panel(engine: Engine, tickers: list[str], horizons: list[
         return pd.DataFrame()
 
     fund = fund.sort_values(["ticker", "fiscal_period_end"]).copy()
-    fund["revenue_growth_qoq"] = fund.groupby("ticker")["revenue"].pct_change()
-    fund["eps_growth_qoq"] = fund.groupby("ticker")["eps_diluted"].pct_change()
+    # fill_method=None: a missing quarter must stay missing. The pandas default
+    # forward-fills it first, which invents a 0% change for a quarter we have
+    # no figure for and then a doubled change for the next one.
+    fund["revenue_growth_qoq"] = fund.groupby("ticker")["revenue"].pct_change(fill_method=None)
+    fund["eps_growth_qoq"] = fund.groupby("ticker")["eps_diluted"].pct_change(fill_method=None)
     fund["margin_delta_qoq"] = fund.groupby("ticker")["net_margin"].diff()
     fund["debt_to_equity"] = fund["total_debt"] / fund["stockholders_equity"]
+
+    # A growth rate off a zero base is infinite, and one infinity turns the
+    # correlation for that whole feature into NaN — the failure shows up as a
+    # blank result for every ticker, not as a bad row. Tesla really did report
+    # diluted EPS of 0.00 for the quarter ending 2013-03-31, so this is not
+    # always a data error; the change is simply undefined, and NaN says that
+    # while inf silently claims to be a number.
+    growth_cols = ["revenue_growth_qoq", "eps_growth_qoq", "debt_to_equity"]
+    fund[growth_cols] = fund[growth_cols].replace([np.inf, -np.inf], np.nan)
 
     # trailing-4Q EPS (or however many quarters we actually have) for a point-in-time P/E
     fund["eps_ttm"] = fund.groupby("ticker")["eps_diluted"].transform(

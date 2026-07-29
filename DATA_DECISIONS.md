@@ -179,3 +179,76 @@ a later 10-K, because annual comparatives get restated and individual quarters
 that old do not. No choice of filing reconciles the two. Derived Q4 rows
 therefore never carry EPS at all, and EPS from EDGAR should be treated as
 unreliable across a split boundary.
+
+---
+
+## 2026-07-29 — yfinance fundamentals replaced by SEC EDGAR
+
+**What**: `fact_fundamentals_quarterly` was rebuilt from EDGAR. The 106
+yfinance rows were deleted and 1,134 EDGAR rows loaded, covering the same 21
+equities from 2007-09-30 to 2026-06-30. Backup of the old table:
+`backups/fact_fundamentals_quarterly_20260729_113555.sql` (gitignored).
+Reload with `python -m src.scripts.load_fundamentals_edgar --apply`.
+
+**Why a replacement and not a merge**: the primary key is
+`(asset_id, fiscal_period_end)` and the providers date the same quarter
+differently — yfinance rounds to month end (2026-03-31), EDGAR gives the
+actual fiscal close (2026-03-28). Loaded together, one quarter becomes two
+rows under two keys and every Track B aggregate double-counts, with no query
+able to separate them afterwards.
+
+**Why EDGAR wins**: 10.7x the history; real fiscal period ends; and
+`announced_d` from the filing itself — often the 8-K earnings release, which
+is when the market actually learned the figure — rather than approximated
+from an earnings calendar. Agreement with yfinance on the 52 overlapping
+quarters was 51/51 on net income and 46/51 on revenue, the exceptions being
+definitional (see the entry on XOM/WMT revenue lines).
+
+**Verified after loading**: 0 duplicate quarters, 0 rows announced on or
+before their period end (no look-ahead), 0 zero or negative revenue.
+
+---
+
+## 2026-07-29 — Three extraction bugs found by loading, not by review
+
+Each produced plausible numbers and raised nothing. All three were caught by
+checking the loaded table rather than by reading the extractor.
+
+**One quarter stored twice** (`_dedupe_near_period_ends`): NVIDIA's quarter
+ending 2010-08-01 is re-dated 2010-07-31 by a 2012 filing, same revenue and
+net income. Both survived as separate primary keys. Quarters are ~91 days
+apart, so period ends within 5 days are now collapsed, keeping the one
+announced first.
+
+**Zero treated as a reported figure** (`skip_zero`): Oracle's 10-Qs carry
+`SalesRevenueNet` = 0 for three quarters of FY2009 while stating the real
+5.45bn under `Revenues`. Because `SalesRevenueNet` ranks higher the zero won,
+and downstream `revenue_growth_qoq` divided by it and became infinite — which
+turned the correlation for that feature into NaN for *every* ticker, printed
+as `r=+nan`. Zero now means "not reported" for revenue only; net income and
+free cash flow can legitimately be zero.
+
+**A sub-line outranking the top line** (`SUBLINE_RATIO`): Oracle tags
+`SalesRevenueNet` with a single product line — 458m for the quarter ending
+2010-02-28 — while total revenue of 6,404m sits under the lower-ranked
+`Revenues`. Ordering cannot fix this, since for Apple and Amazon
+`SalesRevenueNet` *is* the total. A lower-priority tag now wins when it
+exceeds the chosen one by more than 1.5x. The threshold matters: tags that
+differ over what counts as revenue differ by a few percent (Walmart's
+membership fees, Exxon's other income) and JPMorgan's `Revenues` exceeds
+`RevenuesNetOfInterestExpense` by 14% with the bank measure needing to win. A
+sweep of all 21 equities found this only in ORCL, 4 of its 59 quarters.
+
+**A guard that deleted good data**: the mis-tagged-annual check was written as
+"quarter larger than 95% of its year", which also fires when the *annual*
+figure is the wrong line. Oracle's FY2010 total is tagged 2.29bn, so three
+correct quarters of ~5-6bn were silently removed. It now tests for
+near-equality in both directions.
+
+**Also fixed in `src/models/dataset_fundamentals.py`**: `pct_change()` was
+using the pandas default `fill_method='ffill'`, which forward-fills a missing
+quarter and so reports 0% growth for a quarter we have no figure for, then a
+doubled change for the next. Now `fill_method=None`, and infinities are
+converted to NaN — Tesla genuinely reported diluted EPS of 0.00 for the
+quarter ending 2013-03-31, so the growth rate there is undefined rather than
+erroneous.
