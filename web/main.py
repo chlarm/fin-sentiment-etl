@@ -159,7 +159,7 @@ TICKER_DISPLAY_NAMES: dict[str, str] = {
     "TSLA":     "Tesla",
 }
 
-VALID_TABS = frozenset({"home", "predict", "watchlist", "news", "metrics", "corr"})
+VALID_TABS = frozenset({"home", "predict", "watchlist", "news", "metrics", "corr", "fundamentals"})
 
 # Simple in-memory cache for live sentiment (refreshed by /api/live-sentiment)
 _live_sentiment_cache: dict = {"data": [], "updated_at": None}
@@ -194,6 +194,66 @@ def _get_case_studies() -> list:
         _case_studies_cache["result"] = find_case_studies(engine)
         _case_studies_cache["computed"] = True
     return _case_studies_cache["result"]
+
+
+def _num(v):
+    """DB numerics arrive as Decimal/NaN; Jinja needs plain float or None."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    return float(v)
+
+
+def _get_fundamentals(ticker_symbol: str) -> dict | None:
+    """Quarterly fundamentals for one ticker, newest first, with YoY growth.
+
+    YoY uses shift(4) on the chronological series rather than a date-based
+    join. That is only exact when every fiscal year has all four quarters;
+    the 181 ticker-years missing a standalone Q4 (see DATA_DECISIONS.md —
+    derivation was measured and left off because it was wrong ~25% of the
+    time) mean a small minority of "YoY" comparisons here are actually a
+    ~9-month-apart quarter pair. Good enough for a dashboard trend line, not
+    for a number that goes in the thesis without the same caveat.
+    """
+    df = qdf("""
+        SELECT f.fiscal_period_end, f.announced_d, f.revenue, f.net_income, f.eps_diluted,
+               f.gross_margin, f.net_margin, f.total_debt, f.stockholders_equity,
+               f.free_cash_flow, f.source
+        FROM fact_fundamentals_quarterly f
+        JOIN dim_asset a ON a.asset_id = f.asset_id
+        WHERE a.ticker = :t
+        ORDER BY f.fiscal_period_end ASC
+    """, t=ticker_symbol)
+    if df.empty:
+        return None
+
+    df["revenue_yoy"] = df["revenue"].pct_change(4, fill_method=None)
+    df["net_income_yoy"] = df["net_income"].pct_change(4, fill_method=None)
+
+    rows = []
+    for _, r in df.iterrows():
+        rows.append({
+            "fiscal_period_end": r["fiscal_period_end"].strftime("%Y-%m-%d"),
+            "announced_d": r["announced_d"].strftime("%Y-%m-%d") if pd.notna(r["announced_d"]) else None,
+            "revenue": _num(r["revenue"]),
+            "net_income": _num(r["net_income"]),
+            "eps_diluted": _num(r["eps_diluted"]),
+            "gross_margin": _num(r["gross_margin"]),
+            "net_margin": _num(r["net_margin"]),
+            "total_debt": _num(r["total_debt"]),
+            "stockholders_equity": _num(r["stockholders_equity"]),
+            "free_cash_flow": _num(r["free_cash_flow"]),
+            "revenue_yoy": _num(r["revenue_yoy"]),
+            "net_income_yoy": _num(r["net_income_yoy"]),
+            "source": r["source"],
+        })
+
+    return {
+        "rows": list(reversed(rows)),          # newest first, for the table
+        "chart_rows": rows[-20:],              # oldest->newest, for the trend chart
+        "latest": rows[-1],
+        "n_quarters": len(rows),
+        "earliest": rows[0]["fiscal_period_end"],
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -614,6 +674,13 @@ def dashboard(
             sentiment_ticker_result = sentiment_result["per_ticker"][predict_ticker]
         case_studies = _get_case_studies()
 
+    # --- fundamentals: quarterly financials for one ticker (EDGAR-sourced) ---
+    fundamentals_result = None
+    fundamentals_ticker = ticker
+    if tab == 'fundamentals':
+        fundamentals_ticker = ticker if ticker != 'ALL' else (tickers_list[0] if tickers_list else 'AAPL')
+        fundamentals_result = _get_fundamentals(fundamentals_ticker)
+
     # --- watchlist: check each watched ticker's signal for a flip since last view ---
     watchlist_tickers = []
     watchlist_rows = []
@@ -640,6 +707,8 @@ def dashboard(
         case_studies=case_studies,
         watchlist_rows=watchlist_rows,
         watchlist_tickers=watchlist_tickers,
+        fundamentals_result=fundamentals_result,
+        fundamentals_ticker=fundamentals_ticker,
         start_date=start_date_str,
         end_date=end_date_str,
         ticker_options=ticker_options,

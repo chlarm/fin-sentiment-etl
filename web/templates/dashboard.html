@@ -38,6 +38,7 @@
       <a href="/?tab=home" class="nav-item {% if tab=='home' %}active{% endif %}" data-i18n="nav.home">Home</a>
       <a href="/?tab=predict&ticker={{ ticker }}" class="nav-item {% if tab=='predict' %}active{% endif %}" data-i18n="nav.predict">Signal</a>
       <a href="/?tab=watchlist" class="nav-item {% if tab=='watchlist' %}active{% endif %}" data-i18n="nav.watchlist">Watchlist</a>
+      <a href="/?tab=fundamentals&ticker={{ ticker }}" class="nav-item {% if tab=='fundamentals' %}active{% endif %}" data-i18n="nav.fundamentals">Fundamentals</a>
       <a href="/?tab=news&ticker={{ ticker }}&start_d={{ start_date }}&end_d={{ end_date }}" class="nav-item {% if tab=='news' %}active{% endif %}" data-i18n="nav.news">News</a>
       <a href="/daily" class="nav-item" data-i18n="nav.daily_summary">Daily Summary</a>
       <a href="/?tab=metrics&ticker={{ ticker }}&start_d={{ start_date }}&end_d={{ end_date }}" class="nav-item {% if tab=='metrics' %}active{% endif %}" data-i18n="nav.metrics">Metrics</a>
@@ -580,6 +581,120 @@
                 <button type="submit" style="background:none; border:none; color:var(--text-muted); cursor:pointer;" data-i18n="watchlist.remove">Remove</button>
               </form>
             </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% elif tab == 'fundamentals' %}
+    <h2 style="margin-bottom: 4px;" data-i18n="fund.title">Fundamentals</h2>
+    <p style="color: var(--text-muted); margin-bottom: 16px;" data-i18n="fund.desc">
+      Quarterly financials sourced directly from SEC EDGAR filings — up to 19 years of history per company, not the 5-7 quarters a market-data API typically returns.
+    </p>
+
+    <form method="get" action="/" style="margin-bottom:16px; display:flex; gap:8px; align-items:center;">
+      <input type="hidden" name="tab" value="fundamentals">
+      <select name="ticker" onchange="this.form.submit()" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-main);">
+        {% for opt in ticker_options if opt != 'ALL' %}
+        <option value="{{ opt }}" {% if opt == fundamentals_ticker %}selected{% endif %}>{{ ticker_display_names.get(opt, opt) }}</option>
+        {% endfor %}
+      </select>
+    </form>
+
+    {% if not fundamentals_result %}
+    <div style="color: var(--text-muted);" data-i18n="fund.insufficient">No EDGAR fundamentals for {{ fundamentals_ticker }} — this asset doesn't file with the SEC (index, forex, commodity, or crypto).</div>
+    {% else %}
+    {% set fr = fundamentals_result %}
+    {% set L = fr.latest %}
+    <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:12px;">
+      {{ fr.n_quarters }} <span data-i18n="fund.quarters_since">quarters since</span> {{ fr.earliest }}
+    </div>
+
+    <div style="display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
+      <div style="min-width:200px; background: var(--bg-card); padding:14px 16px; border-radius:8px; border:1px solid var(--border-color);">
+        <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:6px;" data-i18n="fund.latest_revenue">Latest quarter revenue ({{ L.fiscal_period_end }})</div>
+        <div style="font-size:1.4em; font-weight:700;">{{ "${:,.1f}B".format(L.revenue / 1e9) if L.revenue is not none else "—" }}</div>
+        {% if L.revenue_yoy is not none %}
+        <div style="font-size:0.8em; margin-top:4px;" class="{% if L.revenue_yoy >= 0 %}val-pos{% else %}val-neg{% endif %}">
+          {{ "%+.1f%%"|format(L.revenue_yoy * 100) }} <span data-i18n="fund.yoy">YoY</span>
+        </div>
+        {% endif %}
+      </div>
+      <div style="min-width:200px; background: var(--bg-card); padding:14px 16px; border-radius:8px; border:1px solid var(--border-color);">
+        <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:6px;" data-i18n="fund.latest_net_income">Net income</div>
+        <div style="font-size:1.4em; font-weight:700;" class="{% if L.net_income is not none and L.net_income >= 0 %}val-pos{% elif L.net_income is not none %}val-neg{% endif %}">
+          {{ "${:,.1f}B".format(L.net_income / 1e9) if L.net_income is not none else "—" }}
+        </div>
+        {% if L.net_margin is not none %}
+        <div style="font-size:0.8em; color:var(--text-muted); margin-top:4px;">
+          {{ "%.1f%%"|format(L.net_margin * 100) }} <span data-i18n="fund.net_margin">net margin</span>
+        </div>
+        {% endif %}
+      </div>
+      <div style="min-width:200px; background: var(--bg-card); padding:14px 16px; border-radius:8px; border:1px solid var(--border-color);">
+        <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:6px;" data-i18n="fund.latest_eps">Diluted EPS</div>
+        <div style="font-size:1.4em; font-weight:700;">{{ "$%.2f"|format(L.eps_diluted) if L.eps_diluted is not none else "—" }}</div>
+      </div>
+      <div style="min-width:200px; background: var(--bg-card); padding:14px 16px; border-radius:8px; border:1px solid var(--border-color);">
+        <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:6px;" data-i18n="fund.latest_fcf">Free cash flow</div>
+        <div style="font-size:1.4em; font-weight:700;">{{ "${:,.1f}B".format(L.free_cash_flow / 1e9) if L.free_cash_flow is not none else "—" }}</div>
+      </div>
+    </div>
+
+    {% set rev_vals = fr.chart_rows | map(attribute='revenue') | select('number') | list %}
+    {% if rev_vals|length > 1 %}
+    <div class="ff-table-container" style="padding:14px 16px; margin-bottom:16px;">
+      <div style="font-size:0.85em; font-weight:600; margin-bottom:8px;" data-i18n="fund.revenue_trend">Revenue by quarter (last {{ rev_vals|length }})</div>
+      <div style="display:flex; align-items:flex-end; gap:3px; height:90px;">
+        {% set max_rev = rev_vals | max %}
+        {% for r in fr.chart_rows %}
+        <div title="{{ r.fiscal_period_end }}: {{ '${:,.1f}B'.format(r.revenue / 1e9) if r.revenue is not none else 'N/A' }}"
+             style="flex:1; min-width:6px; height:{{ ((r.revenue / max_rev) * 100) if r.revenue is not none else 0 }}%; background:var(--accent, #3861fb); border-radius:2px 2px 0 0; opacity:0.85;">
+        </div>
+        {% endfor %}
+      </div>
+      <div style="display:flex; justify-content:space-between; font-size:0.7em; color:var(--text-muted); margin-top:4px;">
+        <span>{{ fr.chart_rows[0].fiscal_period_end }}</span>
+        <span>{{ fr.chart_rows[-1].fiscal_period_end }}</span>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="ff-table-container">
+      <table class="ff-table">
+        <thead>
+          <tr>
+            <th data-i18n="fund.period_end">Period End</th>
+            <th data-i18n="fund.announced">Announced</th>
+            <th data-i18n="fund.revenue">Revenue</th>
+            <th data-i18n="fund.yoy_col">YoY</th>
+            <th data-i18n="fund.net_income_col">Net Income</th>
+            <th data-i18n="fund.eps">EPS</th>
+            <th data-i18n="fund.gross_margin">Gross Margin</th>
+            <th data-i18n="fund.net_margin_col">Net Margin</th>
+            <th data-i18n="fund.debt">Total Debt</th>
+            <th data-i18n="fund.fcf">FCF</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in fr.rows %}
+          <tr>
+            <td class="date-col">{{ r.fiscal_period_end }}</td>
+            <td class="date-col text-muted">{{ r.announced_d or '—' }}</td>
+            <td>{{ "${:,.2f}B".format(r.revenue / 1e9) if r.revenue is not none else '—' }}</td>
+            <td class="{% if r.revenue_yoy is not none and r.revenue_yoy >= 0 %}val-pos{% elif r.revenue_yoy is not none %}val-neg{% else %}val-neu{% endif %}">
+              {{ "%+.1f%%"|format(r.revenue_yoy * 100) if r.revenue_yoy is not none else '—' }}
+            </td>
+            <td class="{% if r.net_income is not none and r.net_income >= 0 %}val-pos{% elif r.net_income is not none %}val-neg{% endif %}">
+              {{ "${:,.2f}B".format(r.net_income / 1e9) if r.net_income is not none else '—' }}
+            </td>
+            <td>{{ "$%.2f"|format(r.eps_diluted) if r.eps_diluted is not none else '—' }}</td>
+            <td>{{ "%.1f%%"|format(r.gross_margin * 100) if r.gross_margin is not none else '—' }}</td>
+            <td>{{ "%.1f%%"|format(r.net_margin * 100) if r.net_margin is not none else '—' }}</td>
+            <td>{{ "${:,.2f}B".format(r.total_debt / 1e9) if r.total_debt is not none else '—' }}</td>
+            <td>{{ "${:,.2f}B".format(r.free_cash_flow / 1e9) if r.free_cash_flow is not none else '—' }}</td>
           </tr>
           {% endfor %}
         </tbody>
