@@ -302,3 +302,40 @@ it in under a second. The unbounded SMTP call is the best-supported
 explanation — it would leave a committed database and a failed task, which is
 what was observed — but it is not proven, which is precisely why the logging
 fix matters more than the diagnosis.
+
+---
+
+## 2026-07-29 — Search terms fixed: 20/21 equities improved, most from near-zero
+
+**What**: `TICKERS stock` (a single extra word) is now the default RSS search
+term for 20 of 21 equities. NFLX keeps the bare ticker.
+
+**Why this isn't the same mistake as before**: a 2026-07-25 entry in this file
+documents removing natural-language overrides (e.g. AMZN -> "Amazon stock
+e-commerce") because they measured worse than the bare ticker across the
+board. That result was correct but got over-generalized in practice into
+"bare ticker is the answer" — which happened to be true for AAPL/MSFT/AMZN/
+TSLA/GOOGL (distinctive alphabetic strings that work as search terms on their
+own) and silently wrong for tickers that collide with ordinary English or are
+too short to mean anything to a full-text search: `V`, `BA`, `HD`, `KO`, `PG`,
+`DIS` returned 0-2 trusted-source articles/week on the bare ticker because
+"V" and "BA" aren't words and "HD"/"KO"/"PG" match unrelated content.
+
+Re-measured properly this time — all 21 equities, bare vs `TICKER stock`,
+trusted-source count over the same 168h window the pipeline actually uses —
+appending "stock" won 20/21, several from zero: KO 0->10, HD 0->14, DIS 0->23,
+BA 0->5, V 1->10, WMT 1->16, JNJ 1->13, INTC 1->13, JPM 4->18, XOM 9->32. It
+also improved the tickers that were already fine (AAPL 18->39, AMZN 25->62),
+so this is not "compensating for bad tickers" so much as "stock" being a
+better query word than nothing. NFLX was the one loser (14->12) and was left
+on the bare ticker.
+
+**Verified with a live run**: 534 news items fetched (was 311-321), and the
+previously-worst tickers now show real weekly volume: XOM 33, DIS 23, WMT 17,
+HD 14, PG 14, JNJ 13, INTC 13, V 11, KO 10, BA 5. BA remains the thinnest —
+Boeing coverage in the trusted-source list appears to be genuinely lighter —
+but that is a real weekly count now, not zero.
+
+**Same caveat as before applies**: Google News' ranking for a query drifts.
+Re-measure with `search_term_experiment.py`-style live queries before changing
+this again rather than assuming the current numbers hold indefinitely.
