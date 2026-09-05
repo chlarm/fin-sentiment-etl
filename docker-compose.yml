@@ -2,6 +2,12 @@ services:
   postgres:
     image: postgres:16
     container_name: fin-postgres
+    # The Airflow stack next door already restarts always; this one did not,
+    # and the asymmetry is what broke the 2026-09-05 run: Docker Desktop came
+    # up, every Airflow container came back on its own, and the ETL ran on
+    # schedule against a database that was still stopped. "unless-stopped"
+    # rather than "always" so a deliberate `docker stop` stays stopped.
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-fin_dw}
       POSTGRES_USER: ${POSTGRES_USER:-fin}

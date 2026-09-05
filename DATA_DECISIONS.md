@@ -444,3 +444,39 @@ of 30 tickers). Zero-row dates in the last 400 days: none remaining.
 
 A ticker newly added to `TICKERS` has no rows at all and pulls the full 400-day
 window, so it starts with real history rather than a fortnight.
+
+---
+
+## 2026-09-05 — Why the pipeline stopped, and what now makes it self-healing
+
+**The cause was never the code.** After the P0 fix (2026-07-29) every run
+succeeded whenever the machine was on: 07-29, 07-30, 07-31 and 08-10 all
+passed. The DAG history shows the real pattern — the run scheduled for 08-01
+executed on 08-10, and the one scheduled for 08-11 executed on 09-03. Airflow
+was catching up after outages of days to weeks. A laptop that is powered off
+at 06:00 cannot run a nightly job.
+
+**Two things made those outages lossy, and both are now fixed**:
+
+1. News fetched a fixed 7-day window, so a catch-up run days later fetched
+   nothing useful. Now 90 days (see the LOOKBACK_HOURS entry).
+2. Prices fetched a fixed 14 days, so a catch-up run filled the recent end and
+   left the middle permanently empty (see the price-lookback entry).
+
+Together these mean a single run after an outage of up to ~90 days now
+restores everything, so the pipeline no longer needs to run every day to avoid
+losing data — it only needs to run.
+
+**What actually broke the 2026-09-05 06:00 run** was smaller and more specific:
+`fin-postgres` had restart policy `no` while every Airflow container had
+`always`. Docker Desktop started, the whole Airflow stack came back on its own,
+the DAG fired on schedule — against a database that was still stopped. Set to
+`unless-stopped` in `docker-compose.yml` and applied to the running container.
+
+**Also**: Docker Desktop had `AutoStart = False` and was not a login item, so
+nothing ran until someone opened it by hand. Enabled both (macOS login item
+plus Docker's own setting, kept in agreement so neither reverts the other).
+
+**Still true**: an outage longer than ~90 days loses news beyond that window,
+and recovered days are thinner than live-fetched ones. Running on a laptop
+remains the weak link; a hosted scheduler would remove it entirely.
