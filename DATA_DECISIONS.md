@@ -410,3 +410,37 @@ the 30-day threshold.
 
 Both call sites now use `google_news_rss_url()` in `src/extract/news_rss.py`,
 covered by `tests/test_news_rss.py`.
+
+---
+
+## 2026-09-05 — Price fetching now closes its own gaps
+
+**What**: `run_daily.stage_prices` chooses its lookback from the data instead
+of always fetching 14 days. `choose_price_lookback()` widens the window to
+reach whichever is further back: the stalest ticker's newest row, or the
+oldest calendar date inside the stored range that has no price row at all.
+Bounded to 14-400 days.
+
+**Why**: the fixed 14-day window made outages permanent. The machine was off
+2026-08-12 → 08-21; the next run's window began after the hole, so it filled
+recent days, reported success, and left ten days that no later run could ever
+reach — the window only moves forward. Prices are fully re-fetchable, so
+losing them was avoidable.
+
+**Two kinds of gap, and only checking the first is what let this survive**:
+
+- *trailing* — newest stored day is behind today; caught by `max(d)`.
+- *interior* — days missing in the middle with data on both sides, so `max(d)`
+  is perfectly current and reports nothing wrong. This is the case that hid.
+
+Interior gaps are detected as calendar dates inside the stored range with zero
+price rows. That is unambiguous because the crypto tickers trade every day
+including weekends — BTC-USD has rows for 3,693 of the 3,705 calendar days it
+spans, and the 12 it lacked were exactly these outage days. A zero-row date is
+therefore always a gap, never a market holiday.
+
+**Repaired**: 2026-08-12 → 08-21 backfilled (and 2026-08-11, which had only 4
+of 30 tickers). Zero-row dates in the last 400 days: none remaining.
+
+A ticker newly added to `TICKERS` has no rows at all and pulls the full 400-day
+window, so it starts with real history rather than a fortnight.

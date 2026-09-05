@@ -61,13 +61,112 @@ def _parse_args() -> argparse.Namespace:
                    help="Run a single stage. Default: all of them, in order.")
     return p.parse_args()
 
-def _fetch_prices(settings: Settings, run_d):
+# Floor: enough to re-confirm recent days and cover a long weekend.
+# Ceiling: a bound on how much one run will try to repair, so a fresh database
+# or a badly stale one doesn't turn into an unbounded download.
+PRICE_LOOKBACK_FLOOR_DAYS = 14
+PRICE_LOOKBACK_CEILING_DAYS = 400
+
+
+def _price_lookback_days(engine, settings: Settings, run_d) -> int:
+    """How far back to fetch prices: far enough to close whatever gap exists.
+
+    This used to be hardcoded at 14 days, which silently made gaps permanent.
+    When the machine was off from 2026-08-12 to 2026-08-21, the next run's
+    14-day window started after the hole, so it filled the recent days and left
+    ten calendar days missing that no later run would ever reach — the window
+    only ever moves forward. Prices, unlike news, are fully re-fetchable, so
+    there is no reason to lose them.
+
+    Two different kinds of gap have to be looked for, and checking only the
+    first is what let the August hole survive a run that "succeeded":
+
+    * trailing — the newest stored day is behind today. Caught by max(d).
+    * interior — days missing in the middle, with data on both sides, so
+      max(d) is perfectly current and reports nothing wrong.
+
+    Interior gaps are found by looking for calendar dates inside the stored
+    range that have no price row at all. That is unambiguous here because the
+    crypto tickers trade every day, weekends included: BTC-USD has a row for
+    3,693 of the 3,705 calendar days it spans, and the 12 it lacks are these
+    outage days. A date with zero rows is therefore a gap, never a holiday.
+    """
+    tickers = list(settings.tickers)
+    horizon_start = run_d - timedelta(days=PRICE_LOOKBACK_CEILING_DAYS)
+
+    with engine.connect() as conn:
+        latest_per_ticker = conn.execute(
+            text("""
+                SELECT a.ticker, max(p.d) AS latest
+                FROM fact_price_daily p
+                JOIN dim_asset a ON a.asset_id = p.asset_id
+                WHERE a.ticker = ANY(:tickers)
+                GROUP BY a.ticker
+            """),
+            {"tickers": tickers},
+        ).all()
+
+        earliest_gap = conn.execute(
+            text("""
+                WITH bounds AS (
+                    SELECT greatest(min(d), :horizon_start) AS lo, max(d) AS hi
+                    FROM fact_price_daily
+                )
+                SELECT min(gs)::date
+                FROM bounds,
+                     generate_series(bounds.lo, bounds.hi, interval '1 day') gs
+                LEFT JOIN (SELECT DISTINCT d FROM fact_price_daily) p
+                       ON p.d = gs::date
+                WHERE p.d IS NULL
+            """),
+            {"horizon_start": horizon_start},
+        ).scalar()
+
+    lookback, reason = choose_price_lookback(
+        run_d, latest_per_ticker, earliest_gap, expected_tickers=len(tickers))
+    if reason:
+        print(f"[price] {reason} — widening lookback to {lookback} days")
+    return lookback
+
+
+def choose_price_lookback(
+    run_d, latest_per_ticker: list, earliest_gap, expected_tickers: int
+) -> tuple[int, str | None]:
+    """Pure decision half of _price_lookback_days, split out so the rule can be
+    tested without a database. Returns (lookback_days, reason) where reason is
+    None when nothing needed repairing.
+
+    `latest_per_ticker` is [(ticker, latest_date), ...]; `earliest_gap` is the
+    oldest date inside the stored range with no price row, or None.
+    """
+    if len(latest_per_ticker) < expected_tickers:
+        missing = expected_tickers - len(latest_per_ticker)
+        return PRICE_LOOKBACK_CEILING_DAYS, f"{missing} ticker(s) have no price history yet"
+
+    stalest_ticker, stalest_date = min(latest_per_ticker, key=lambda r: r[1])
+    needed = (run_d - stalest_date).days
+    reason = f"{stalest_ticker} latest {stalest_date}"
+
+    if earliest_gap is not None:
+        gap_days = (run_d - earliest_gap).days
+        if gap_days > needed:
+            needed = gap_days
+            reason = f"missing price days from {earliest_gap}"
+
+    # +5 so the fetch starts before the last stored day rather than exactly on
+    # it, which also lets recompute_returns_from_db see a prior close.
+    lookback = max(PRICE_LOOKBACK_FLOOR_DAYS,
+                   min(PRICE_LOOKBACK_CEILING_DAYS, needed + 5))
+    return lookback, (reason if lookback > PRICE_LOOKBACK_FLOOR_DAYS else None)
+
+
+def _fetch_prices(settings: Settings, run_d, lookback_days: int):
     tickers = list(settings.tickers)
 
     # --- Try Yahoo first (if configured) ---
     if settings.price_source == "yahoo":
         try:
-            df = fetch_daily_prices_yahoo(tickers, end_d=run_d, lookback_days=14)
+            df = fetch_daily_prices_yahoo(tickers, end_d=run_d, lookback_days=lookback_days)
             if not df.empty:
                 return df
             print("[price] yahoo returned empty; fallback to stooq")
@@ -76,7 +175,7 @@ def _fetch_prices(settings: Settings, run_d):
 
     # --- Fallback to Stooq (also wrapped in try/except) ---
     try:
-        df = fetch_daily_prices_stooq(tickers, end_d=run_d, lookback_days=60)
+        df = fetch_daily_prices_stooq(tickers, end_d=run_d, lookback_days=max(lookback_days, 60))
         if not df.empty:
             return df
         print("[price] stooq also returned empty — continuing ETL with no price data")
@@ -88,11 +187,14 @@ def _fetch_prices(settings: Settings, run_d):
 
 def stage_prices(settings: Settings, engine, run_d) -> None:
     """Prices, return repair and technical indicators. No model needed."""
-    price_raw = _fetch_prices(settings, run_d)
+    lookback_days = _price_lookback_days(engine, settings, run_d)
+    price_raw = _fetch_prices(settings, run_d, lookback_days)
     price_feat = add_return_features(price_raw)
 
     with engine.begin() as conn:
-        ensure_dim_dates(conn, run_d - timedelta(days=60), run_d)
+        # dim_date must span the fetch window, not a fixed 60 days, or a
+        # gap-closing run would insert prices on dates dim_date lacks.
+        ensure_dim_dates(conn, run_d - timedelta(days=max(60, lookback_days)), run_d)
         asset_map = ensure_assets(conn, list(settings.tickers))
 
         prices_cnt = upsert_price_daily(conn, asset_map, price_feat)
