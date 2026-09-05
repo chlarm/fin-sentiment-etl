@@ -537,3 +537,56 @@ distinct days, with Bangkok Post as effectively the sole recurring publisher.
 USD/THB simply is not covered daily by the international financial press. This
 is a property of the asset's news coverage, not a pipeline defect, and should
 be stated as such — or THBUSD=X excluded from sentiment-based analysis.
+
+---
+
+## 2026-09-05 — Track A re-run on 29 tickers: the sentiment edge does not survive
+
+Re-ran Track A after sentiment coverage went from 5 eligible tickers to 29.
+This is the headline result for the thesis, and it is negative.
+
+**The earlier positive result was small-sample noise.** On ~5 tickers
+(2026-07-25) the pooled sentiment model scored 0.635 against a 0.558 baseline
+with 1 of 3 walk-forward folds beating its own baseline. On 29 tickers it
+scores **0.483 against a 0.590 baseline, 0/3 folds**. Six times the tickers,
+and the edge is gone.
+
+**Sentiment does not merely fail to help — it measurably hurts.** Accuracy
+against a majority baseline is a weak test here (the market trended up, and
+`class_weight="balanced"` deliberately pushes predictions away from the base
+rate), so technical-only and technical+sentiment were compared on *identical
+rows* using AUC, which is threshold-free:
+
+| horizon | AUC technical | AUC +sentiment | delta |
+|---|---|---|---|
+| 1d | 0.489 | 0.471 | −0.019 |
+| 5d | 0.527 | 0.514 | −0.013 |
+| 21d | 0.736 | 0.722 | −0.015 |
+
+Negative at every horizon, consistently — the signature of adding noise
+features to a small sample, not of a signal being missed.
+
+**The dominant effect is regime shift, not model quality.** The training
+window has a 0.438 up-day rate and the test window 0.590; at h=21d it is 0.489
+against 0.688. The model learned a falling market and was tested on a rising
+one. With ~9 months of sentiment history there is no way to train across
+regimes, and no amount of feature engineering fixes that.
+
+**Row counts were overstating the evidence by ~16x.** The pooled test set is
+524 rows but only **33 distinct market days** — rows from the same day across
+29 tickers move together with the market, so the day count is much closer to
+the effective sample size. `sentiment_signal()` now returns `n_train_days` /
+`n_test_days` and the walk-forward folds carry `n_test_days`; the dashboard
+quotes days rather than rows. Every fold is ~32-35 market days.
+
+**Do not read the h=21d AUC of 0.736 as a finding.** Its test set is 269 rows
+over 27 market days, pooled across 25 tickers — roughly 27 independent
+observations. It is a lead worth revisiting once there is more history, not a
+result.
+
+**What this supports**: the committee's original objection — that the
+correlation work was not usable — now has direct evidence behind it rather
+than being taken on faith. Track A's honest conclusion is that daily news
+sentiment, as captured here, carries no exploitable short-horizon directional
+information at the sample sizes available, and the technical-only baseline
+does not beat a majority rule either (78,528 rows, 30 tickers, ~10 years).

@@ -401,7 +401,7 @@
       </div>
       <div style="margin-top:8px; display:flex; gap:4px; flex-wrap:wrap;">
         {% for f in wf.folds %}
-        <div title="{{ f.test_start }} to {{ f.test_end }}, n={{ f.n_test }}" style="font-size:0.72em; padding:3px 8px; border-radius:4px; background:var(--border-color); {% if f.beats_baseline %}color:#16c784;{% else %}color:#ea3943;{% endif %}">
+        <div title="{{ f.test_start }} to {{ f.test_end }}, n={{ f.n_test }}{% if f.n_test_days %} rows over {{ f.n_test_days }} market days{% endif %}" style="font-size:0.72em; padding:3px 8px; border-radius:4px; background:var(--border-color); {% if f.beats_baseline %}color:#16c784;{% else %}color:#ea3943;{% endif %}">
           {{ "%.0f%%"|format(f.accuracy * 100) }}
         </div>
         {% endfor %}
@@ -457,7 +457,7 @@
     <div class="ff-table-container" style="padding:16px; margin-top:16px;">
       <div style="font-size:0.95em; font-weight:600; margin-bottom:2px;" data-i18n="predict.sentiment_title">Sentiment-augmented model (exploratory)</div>
       <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:12px;" data-i18n="predict.sentiment_desc">
-        Pooled across the {{ sentiment_result.tickers|length }} tickers with real sentiment history ({{ sentiment_result.tickers|join(', ') }}) — sentiment coverage only started ~Dec 2025, so n_test={{ sentiment_result.n_test }} is small. Directional, not conclusive.
+        Pooled across the {{ sentiment_result.tickers|length }} tickers with real sentiment history ({{ sentiment_result.tickers|join(', ') }}). Sentiment coverage only started ~Dec 2025, and the {{ sentiment_result.n_test }} test rows come from just {{ sentiment_result.n_test_days }} distinct market days — rows from the same day move together with the market, so the day count is the honest sample size. Directional, not conclusive.
       </div>
       <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
         <div style="min-width:200px;">

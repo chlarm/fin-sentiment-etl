@@ -82,6 +82,11 @@ def _walk_forward_accuracies(
             "test_start": str(test_start),
             "test_end": str(test_end),
             "n_test": int(len(test)),
+            # Distinct market days, which is much closer to the effective
+            # sample size than the row count in a pooled model: rows from the
+            # same day across tickers move together with the market, so 545
+            # pooled rows can be as few as 33 independent observations.
+            "n_test_days": int(test["d"].nunique()),
             "accuracy": round(acc, 3),
             "baseline": round(baseline, 3),
             "beats_baseline": acc > baseline + 0.02,
@@ -258,6 +263,11 @@ def sentiment_signal(engine: Engine, horizon: int = HORIZON, min_days: int = 30)
         "horizon": horizon,
         "n_train": int(len(train)),
         "n_test": int(len(test)),
+        # Row counts overstate the evidence in a pooled model — see
+        # _walk_forward_accuracies. Reported alongside so the dashboard and
+        # the thesis quote the number of independent market days, not rows.
+        "n_train_days": int(train["d"].nunique()),
+        "n_test_days": int(test["d"].nunique()),
         "test_accuracy": round(acc, 3),
         "majority_baseline": round(majority_baseline, 3),
         "beats_baseline": acc > majority_baseline + 0.02,
