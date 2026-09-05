@@ -670,3 +670,76 @@ no relationship to subsequent returns that survives outlier treatment,
 out-of-sample validation, or an honest accounting of the sample size. This is
 a defensible negative result, and it is now the second one — Track A reached
 the same verdict for sentiment on the same day.
+
+---
+
+## 2026-09-05 — Volatility forecasting: the first positive result
+
+Every result in this project so far has been null. This one is not, and the
+reason is that it asks a different question of the same data.
+
+**Why direction was the wrong target.** Measured across all 30 assets over
+2006-2026: lag-1 autocorrelation of daily returns averages **-0.053** — no
+signal, which is exactly what Track A reported. Over the same rows, 20-day
+realised volatility autocorrelates at **+0.901** at a 5-day lag and **+0.504**
+at 20 days, and the weakest of the 30 assets still scores +0.821 at 5 days.
+Volatility clusters; direction does not. Track A was not a modelling failure,
+it was a question the data cannot answer.
+
+**The test is skill against persistence, not R^2.** Predicting volatility from
+volatility scores well by construction, so a headline R^2 says nothing. The
+benchmark is the free forecast — "next period's volatility equals the current
+20-day reading" — which any practitioner has for nothing. `skill = 1 -
+MSE(model)/MSE(persistence)`; positive means the model earns its existence.
+
+**Results** (`src/models/forecast_volatility.py`, chronological hold-out):
+
+| horizon | model R² | persistence R² | skill | median error (ann %) |
+|---|---|---|---|---|
+| 5 days | 0.534 | 0.408 | **+0.213** | 6.22 vs 7.70 |
+| 21 days | 0.739 | 0.606 | **+0.339** | 4.67 vs 5.78 |
+
+Walk-forward: **5 of 5 folds beat persistence at both horizons**, spanning
+2010-2026 including the COVID crash and the 2022 bear market. Skill ranges
++0.153 to +0.224 (5d) and +0.180 to +0.349 (21d). Per asset: **29 of 30 beat
+persistence**, median skill +0.324. The exception is THBUSD=X (-0.085).
+
+In-sample vs test R^2 is 0.610/0.534 at 5 days and 0.749/0.739 at 21 days —
+the second is essentially no overfitting gap.
+
+**Checked before believing it.** The failure mode that would make this look
+excellent and be worthless is a forward window that includes the current day.
+The window expression was verified position by position against a hand
+computation, and confirmed that a spike on day *t* appears only in the targets
+of days before *t*, never in day *t*'s own. Locked down by
+`tests/test_dataset_volatility.py`.
+
+**The edge is not a re-fitted persistence.** Ablation at 21 days:
+
+| features | test R² | skill |
+|---|---|---|
+| persistence (free) | 0.606 | — |
+| all features | 0.739 | +0.339 |
+| `log_vol_20` only | 0.641 | +0.089 |
+| **everything except `log_vol_20`** | **0.739** | **+0.339** |
+| own volatility at 5/20/60 only | 0.708 | +0.260 |
+
+Removing the persistence anchor entirely changes nothing, so the model is not
+copying it. The value comes from volatility at several horizons at once, which
+carries whether volatility is rising or falling and how far it sits from its
+slower level — a mechanism that can be stated, not just fitted.
+
+**A negative finding inside the positive one.** The two market-wide features
+add nothing: dropping both moves the 21-day test R^2 from 0.739 to 0.740.
+Recorded in the code so they are never cited as contributing.
+
+**Caveats that belong in the write-up.** Forward windows on consecutive days
+overlap heavily (a 5-day window shares 4 days with the next), so the effective
+sample is far smaller than 143,947 rows — though this affects the model and
+persistence identically, so the *comparison* stands. Rows also cluster
+cross-sectionally across 30 assets on the same dates, as in Track B.
+
+**Why this matters for the thesis.** It changes the conclusion from "nothing
+in this data is predictable" to the more precise and more defensible "the
+direction of returns is not predictable, their magnitude is" — and the
+dashboard can say something useful and true.
