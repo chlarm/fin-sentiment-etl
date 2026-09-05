@@ -743,3 +743,33 @@ cross-sectionally across 30 assets on the same dates, as in Track B.
 in this data is predictable" to the more precise and more defensible "the
 direction of returns is not predictable, their magnitude is" — and the
 dashboard can say something useful and true.
+
+---
+
+## 2026-09-05 — Volatility forecast on the Signal tab, and a stale-asset bug
+
+**What**: the Signal tab now leads with a volatility outlook — current 20-day
+annualised volatility, forecasts for the next 5 and 21 trading days with a
+band, and the ratio to current so "calmer" or "rougher" is readable at a
+glance. Below it sits the evidence table: model R², the free forecast's R²,
+skill, and typical error in annualised percent.
+
+It is placed above the direction model deliberately. It is the one panel that
+beats its baseline, and burying it under a model that does not would misstate
+which part of this work is usable.
+
+**Two fits per horizon, on purpose**: the accuracy claim comes from a model
+trained on the chronological training window and scored on the held-out
+remainder, while the number the user reads comes from a model refitted on all
+history. Quoting out-of-sample skill next to an all-data prediction is the
+honest pairing — the claim is earned on unseen data, the forecast is not
+handicapped by ignoring recent years.
+
+**Bug found while verifying the Thai translation** (`web/main.py`,
+`_static_version`): the cache-busting token was computed from `style.css`'s
+mtime alone, but the template appends it to `i18n.js` as well. Editing a
+translation left the URL unchanged, so browsers kept serving the cached
+`i18n.js` and new Thai strings silently never appeared — indistinguishable
+from a broken translation. Every earlier i18n change only became visible
+because some CSS edit happened to move the token. Now the newest mtime across
+the whole static directory.

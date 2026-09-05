@@ -15,6 +15,7 @@ from scipy import stats as scipy_stats
 
 from src.models.predict import signal_and_backtest, sentiment_signal
 from src.models.case_studies import find_case_studies
+from src.models.forecast_volatility import volatility_outlook
 from src.models.watchlist import (
     list_watchlist, add_to_watchlist, remove_from_watchlist, check_signal_change,
 )
@@ -24,8 +25,20 @@ from fastapi.responses import RedirectResponse
 BASE_DIR = Path(__file__).resolve().parent
 
 def _static_version() -> str:
+    """Cache-busting token covering EVERY static file, not just the stylesheet.
+
+    This used to read only style.css while the templates append it to both
+    style.css and i18n.js. Editing a translation therefore changed nothing the
+    browser could see: the URL stayed identical, so the old i18n.js was served
+    from cache until some unrelated CSS edit happened to move the token. New
+    Thai strings silently did not appear, which reads as a broken translation
+    rather than a stale asset. Taking the newest mtime across the directory
+    means any static change invalidates the cache.
+    """
     try:
-        return str(int((BASE_DIR / "static" / "style.css").stat().st_mtime))
+        static_dir = BASE_DIR / "static"
+        mtimes = [f.stat().st_mtime for f in static_dir.iterdir() if f.is_file()]
+        return str(int(max(mtimes))) if mtimes else "0"
     except OSError:
         return "0"
 
@@ -169,6 +182,9 @@ _live_sentiment_cache: dict = {"data": [], "updated_at": None}
 _predict_cache: dict = {}
 _sentiment_signal_cache: dict = {"computed": False, "result": None}
 _case_studies_cache: dict = {"computed": False, "result": None}
+# Volatility forecasting fits two models per horizon over ~144k rows (~10s),
+# so it is computed once per process like the other model-backed panels.
+_volatility_cache: dict = {"computed": False, "result": None}
 
 
 def qdf(sql: str, **params) -> pd.DataFrame:
@@ -194,6 +210,13 @@ def _get_case_studies() -> list:
         _case_studies_cache["result"] = find_case_studies(engine)
         _case_studies_cache["computed"] = True
     return _case_studies_cache["result"]
+
+
+def _get_volatility() -> dict | None:
+    if not _volatility_cache["computed"]:
+        _volatility_cache["result"] = volatility_outlook(engine)
+        _volatility_cache["computed"] = True
+    return _volatility_cache["result"]
 
 
 def _num(v):
@@ -666,6 +689,8 @@ def dashboard(
     sentiment_result = None
     sentiment_ticker_result = None
     case_studies = []
+    volatility_result = None
+    volatility_ticker_result = None
     if tab == 'predict':
         predict_ticker = ticker if ticker != 'ALL' else (tickers_list[0] if tickers_list else 'AAPL')
         predict_result = _get_prediction(predict_ticker)
@@ -673,6 +698,9 @@ def dashboard(
         if sentiment_result and predict_ticker in sentiment_result["per_ticker"]:
             sentiment_ticker_result = sentiment_result["per_ticker"][predict_ticker]
         case_studies = _get_case_studies()
+        volatility_result = _get_volatility()
+        if volatility_result:
+            volatility_ticker_result = volatility_result['per_ticker'].get(predict_ticker)
 
     # --- fundamentals: quarterly financials for one ticker (EDGAR-sourced) ---
     fundamentals_result = None
@@ -705,6 +733,8 @@ def dashboard(
         sentiment_result=sentiment_result,
         sentiment_ticker_result=sentiment_ticker_result,
         case_studies=case_studies,
+        volatility_result=volatility_result,
+        volatility_ticker_result=volatility_ticker_result,
         watchlist_rows=watchlist_rows,
         watchlist_tickers=watchlist_tickers,
         fundamentals_result=fundamentals_result,

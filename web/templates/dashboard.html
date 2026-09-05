@@ -355,6 +355,77 @@
       </select>
     </form>
 
+    {% if volatility_ticker_result and volatility_result %}
+    {% set vt = volatility_ticker_result %}
+    <div class="ff-table-container" style="padding:16px; margin-bottom:20px; border-left:3px solid #16c784;">
+      <div style="display:flex; align-items:baseline; gap:8px; margin-bottom:2px;">
+        <span style="font-size:1.0em; font-weight:700;" data-i18n="vol.title">Volatility outlook</span>
+        <span style="font-size:0.72em; padding:2px 8px; border-radius:10px; background:rgba(22,199,132,0.15); color:#16c784; font-weight:600;" data-i18n="vol.badge">beats its baseline</span>
+      </div>
+      <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:14px;" data-i18n="vol.desc">
+        How much this asset is likely to move — not which direction. Direction is not predictable in this data (see below); the size of the moves is. Measured across 30 assets since 2006, returns show almost no day-to-day persistence while volatility shows a great deal.
+      </div>
+
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <div style="min-width:190px; background:var(--bg-card); padding:12px 14px; border-radius:8px; border:1px solid var(--border-color);">
+          <div style="font-size:0.78em; color:var(--text-muted); margin-bottom:4px;" data-i18n="vol.current">Current (20-day, annualised)</div>
+          <div style="font-size:1.35em; font-weight:700;">{{ "%.1f%%"|format(vt.current_annpct) }}</div>
+          <div style="font-size:0.72em; color:var(--text-muted); margin-top:3px;">{{ vt.as_of }}</div>
+        </div>
+
+        {% for h, f in vt.forecasts.items() %}
+        <div style="min-width:210px; background:var(--bg-card); padding:12px 14px; border-radius:8px; border:1px solid var(--border-color);">
+          <div style="font-size:0.78em; color:var(--text-muted); margin-bottom:4px;">
+            <span data-i18n="vol.next">Next</span> {{ h }} <span data-i18n="vol.days">trading days</span>
+          </div>
+          <div style="font-size:1.35em; font-weight:700;"
+               class="{% if f.ratio_to_current and f.ratio_to_current >= 1.15 %}val-neg{% elif f.ratio_to_current and f.ratio_to_current <= 0.85 %}val-pos{% endif %}">
+            {{ "%.1f%%"|format(f.forecast_annpct) }}
+            {% if f.ratio_to_current %}
+            <span style="font-size:0.6em; color:var(--text-muted);">{{ "%.2f"|format(f.ratio_to_current) }}×</span>
+            {% endif %}
+          </div>
+          <div style="font-size:0.72em; color:var(--text-muted); margin-top:3px;">
+            <span data-i18n="vol.range">typical range</span> {{ "%.1f"|format(f.band_low_annpct) }}–{{ "%.1f%%"|format(f.band_high_annpct) }}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--border-color);">
+        <div style="font-size:0.8em; font-weight:600; margin-bottom:6px;" data-i18n="vol.evidence">Why this number is worth showing</div>
+        <div style="font-size:0.78em; color:var(--text-muted); margin-bottom:8px;" data-i18n="vol.evidence_desc">
+          The benchmark is not zero — it is the free forecast &ldquo;next period equals the current reading&rdquo;, which needs no model. Skill above 0 means the model beats that. Measured on a held-out period it never trained on.
+        </div>
+        <table class="ff-table" style="font-size:0.78em;">
+          <thead>
+            <tr>
+              <th data-i18n="vol.horizon">Horizon</th>
+              <th data-i18n="vol.model_r2">Model R²</th>
+              <th data-i18n="vol.persist_r2">Free forecast R²</th>
+              <th data-i18n="vol.skill">Skill</th>
+              <th data-i18n="vol.typ_err">Typical error</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for hz in volatility_result.horizons %}
+            <tr>
+              <td>{{ hz.horizon }} <span data-i18n="vol.days_short">days</span></td>
+              <td>{{ "%.3f"|format(hz.test_r2) }}</td>
+              <td class="text-muted">{{ "%.3f"|format(hz.persistence_r2) }}</td>
+              <td class="{% if hz.beats_persistence %}val-pos{% else %}val-neg{% endif %}">{{ "%+.3f"|format(hz.skill) }}</td>
+              <td>{{ "%.2f%%"|format(hz.median_error_annpct) }} <span class="text-muted">vs {{ "%.2f%%"|format(hz.persistence_error_annpct) }}</span></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        <div style="font-size:0.74em; color:var(--text-muted); margin-top:8px;" data-i18n="vol.caveat">
+          Held out from {{ volatility_result.horizons[0].test_start }} onward. Every walk-forward fold beat the free forecast at both horizons, and 29 of 30 assets do individually — THB/USD is the exception. Forward windows on consecutive days overlap, so the effective sample is smaller than the row count; that affects the model and the benchmark equally, so the comparison holds.
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     {% if not predict_result %}
     <div style="color: var(--text-muted);" data-i18n="predict.insufficient">Not enough price/technical history for {{ predict_ticker }} yet to train and honestly backtest a model.</div>
     {% else %}

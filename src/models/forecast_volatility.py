@@ -97,6 +97,97 @@ def _walk_forward(df: pd.DataFrame, target: str, persist_col: str, n_folds=WF_FO
     return results
 
 
+ANNUALISE = np.sqrt(252) * 100  # daily stdev -> annualised percent
+
+
+def volatility_outlook(engine, horizons: list[int] | None = None) -> dict | None:
+    """Live volatility forecast for every asset, plus the evidence that the
+    forecast is worth showing at all.
+
+    Two fits per horizon, deliberately. The first trains on the chronological
+    training window and scores the held-out remainder, which is where the
+    skill-against-persistence figure comes from — a number produced on data
+    the model never saw. The second refits on everything so the forecast the
+    user reads is not handicapped by ignoring the last few years. Reporting
+    the first model's skill next to the second model's prediction is the
+    honest pairing: the accuracy claim is earned out of sample, the prediction
+    uses all available history.
+
+    Returns None if there is not enough data to do both.
+    """
+    horizons = horizons or HORIZONS
+    with engine.connect() as conn:
+        tickers = pd.read_sql(
+            text("SELECT ticker FROM dim_asset ORDER BY ticker"), conn
+        )["ticker"].tolist()
+
+    panel = build_volatility_dataset(engine, tickers, horizons)
+    if panel.empty:
+        return None
+
+    out: dict = {"horizons": [], "per_ticker": {}}
+
+    for h in horizons:
+        target, persist = f"target_logvol_{h}d", f"persistence_{h}d"
+        labelled = panel[
+            VOLATILITY_FEATURES + [target, persist, "d", "ticker"]
+        ].replace([np.inf, -np.inf], np.nan).dropna()
+        if len(labelled) < MIN_ROWS * 2:
+            continue
+
+        train, test = _chronological_split(labelled, TEST_FRACTION)
+        if len(train) < MIN_ROWS or len(test) < MIN_ROWS:
+            continue
+        _, pred = _fit_predict(train, test, target)
+        scored = _score(test[target].to_numpy(), pred, test[persist].to_numpy())
+
+        live_model = HistGradientBoostingRegressor(
+            max_iter=300, max_depth=5, learning_rate=0.05, random_state=42
+        ).fit(labelled[VOLATILITY_FEATURES], labelled[target])
+
+        out["horizons"].append({
+            "horizon": h,
+            "test_r2": round(float(scored["test_r2"]), 3),
+            "persistence_r2": round(float(scored["persist_r2"]), 3),
+            "skill": round(float(scored["skill"]), 3),
+            "beats_persistence": scored["skill"] > 0,
+            "median_error_annpct": round(float(scored["mae_model_annpct"]), 2),
+            "persistence_error_annpct": round(float(scored["mae_persist_annpct"]), 2),
+            "n_train": int(len(train)),
+            "n_test": int(len(test)),
+            "test_start": str(test["d"].min()),
+            "test_end": str(test["d"].max()),
+        })
+
+        # Latest usable row per ticker — features only, so a row is usable even
+        # though its own forward target cannot exist yet.
+        # log_vol_20 is already one of VOLATILITY_FEATURES; selecting it again
+        # would duplicate the column and break the fitted feature ordering.
+        live = panel[VOLATILITY_FEATURES + ["d", "ticker"]].replace(
+            [np.inf, -np.inf], np.nan).dropna()
+        latest = live.sort_values("d").groupby("ticker").tail(1)
+        preds = live_model.predict(latest[VOLATILITY_FEATURES])
+
+        for (_, row), p in zip(latest.iterrows(), preds):
+            current = float(np.exp(row["log_vol_20"])) * ANNUALISE
+            forecast = float(np.exp(p)) * ANNUALISE
+            entry = out["per_ticker"].setdefault(
+                row["ticker"], {"as_of": str(row["d"]), "current_annpct": round(current, 1),
+                                "forecasts": {}}
+            )
+            entry["forecasts"][h] = {
+                "forecast_annpct": round(forecast, 1),
+                "ratio_to_current": round(forecast / current, 2) if current > 0 else None,
+                # A band, not a point. The median out-of-sample error is what
+                # the model actually misses by, so quoting a single number
+                # without it would overstate the precision.
+                "band_low_annpct": round(max(forecast - scored["mae_model_annpct"], 0.0), 1),
+                "band_high_annpct": round(forecast + scored["mae_model_annpct"], 1),
+            }
+
+    return out if out["horizons"] else None
+
+
 def main() -> None:
     settings = Settings()
     engine = get_engine(settings)
