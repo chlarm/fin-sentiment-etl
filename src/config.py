@@ -34,16 +34,45 @@ def _get_bool(name: str, default: str = "0") -> bool:
 # needs revisiting, re-measure before changing it — Google News' ranking for
 # a given query drifts over time, which is exactly what happened here.
 _DEFAULT_TICKER_SEARCH_TERMS: dict[str, str] = {
-    "GC=F":     "gold price USD futures",
-    "CL=F":     "crude oil price futures WTI",
-    "EURUSD=X": "euro dollar exchange rate",
-    "THBUSD=X": "Thai baht USD exchange rate",
-    "BTC-USD":  "Bitcoin USD price crypto",
-    "ETH-USD":  "Ethereum USD price crypto",
-    "EURUSD":   "euro dollar exchange rate",
-    "^GSPC":    "S&P 500 stock market index",
-    "^DJI":     "Dow Jones industrial average",
-    "^IXIC":    "NASDAQ stock market index",
+    # Non-equities, re-measured 2026-09-05 (trusted-source articles over the
+    # 90-day window, before -> after). The originals read like descriptions
+    # rather than names, and since " market" is appended to every query they
+    # over-narrowed exactly the way the old equity overrides did:
+    #   GC=F      gold price USD futures      ->  gold             4 -> 39
+    #   CL=F      crude oil price futures WTI ->  WTI crude       30 -> 42
+    #   EURUSD=X  euro dollar exchange rate   ->  EUR USD          5 -> 52
+    #   THBUSD=X  Thai baht USD exchange rate ->  Thai baht        1 ->  9
+    #   BTC-USD   Bitcoin USD price crypto    ->  Bitcoin         16 -> 37
+    #   ETH-USD   Ethereum USD price crypto   ->  ETH crypto      13 -> 38
+    #   ^GSPC     S&P 500 stock market index  ->  S&P 500         44 -> 56
+    #   ^DJI      Dow Jones industrial average->  Dow Jones       52 -> 59
+    #   ^IXIC     NASDAQ stock market index   ->  Nasdaq          30 -> 83
+    #
+    # The rule is "the instrument's canonical name", not "shorter": CL=F is the
+    # counterexample that proves it — bare "crude oil" scored 15, worse than
+    # the long original, while "WTI crude" scored 42.
+    #
+    # Relevance was checked, not assumed: all 39 headlines returned for the
+    # bare word "gold" were about bullion prices — none about gold medals,
+    # Goldman or mining stocks — because the trusted-source filter already
+    # restricts results to the financial press, where "gold" means the metal.
+    # Likewise all 38 for "ETH crypto" mention ETH/Ethereum by name.
+    #
+    # Candidates were ranked on DISTINCT DAYS covered, not article count, since
+    # that is what the >=30-day eligibility threshold actually measures: for
+    # ETH-USD, "ETH crypto" (38 articles / 26 days) beat "Ethereum price"
+    # (25 / 22) on both, but the two metrics can disagree — bare "Ethereum"
+    # returned 23 articles spread over only 10 days.
+    "GC=F":     "gold",
+    "CL=F":     "WTI crude",
+    "EURUSD=X": "EUR USD",
+    "THBUSD=X": "Thai baht",
+    "BTC-USD":  "Bitcoin",
+    "ETH-USD":  "ETH crypto",
+    "EURUSD":   "EUR USD",
+    "^GSPC":    "S&P 500",
+    "^DJI":     "Dow Jones",
+    "^IXIC":    "Nasdaq",
     # Equities: "<ticker> stock", except NFLX (measured worse — see above).
     "AAPL": "AAPL stock",
     "MSFT": "MSFT stock",

@@ -480,3 +480,60 @@ plus Docker's own setting, kept in agreement so neither reverts the other).
 **Still true**: an outage longer than ~90 days loses news beyond that window,
 and recovered days are thinner than live-fetched ones. Running on a laptop
 remains the weak link; a hosted scheduler would remove it entirely.
+
+---
+
+## 2026-09-05 — Non-equity search terms rewritten; coverage 7/30 -> 29/30
+
+**What**: every non-equity search term in `src/config.py` was replaced, after
+measuring candidates against the live feed. Trusted-source articles in the
+90-day window, before -> after:
+
+| ticker | old term | new term | before | after |
+|---|---|---|---|---|
+| GC=F | gold price USD futures | `gold` | 4 | 39 |
+| CL=F | crude oil price futures WTI | `WTI crude` | 30 | 42 |
+| EURUSD=X | euro dollar exchange rate | `EUR USD` | 5 | 52 |
+| THBUSD=X | Thai baht USD exchange rate | `Thai baht` | 1 | 9 |
+| BTC-USD | Bitcoin USD price crypto | `Bitcoin` | 16 | 37 |
+| ETH-USD | Ethereum USD price crypto | `ETH crypto` | 13 | 38 |
+| ^GSPC | S&P 500 stock market index | `S&P 500` | 44 | 56 |
+| ^DJI | Dow Jones industrial average | `Dow Jones` | 52 | 59 |
+| ^IXIC | NASDAQ stock market index | `Nasdaq` | 30 | 83 |
+
+**Why they were bad**: they read as descriptions rather than names, and
+" market" is appended to every query, so they over-narrowed Google News'
+full-text match — the same failure the old equity overrides had.
+
+**The rule is "canonical instrument name", not "shorter"**. CL=F is the
+counterexample that establishes it: bare `crude oil` scored 15, *worse* than
+the long original, while `WTI crude` scored 42.
+
+**Ranked on distinct days, not article count**, since >= 30 *days* is what
+eligibility measures. The two can disagree: bare `Ethereum` returned 23
+articles across only 10 days, while `ETH crypto` gave 38 across 26.
+
+**Relevance was verified, not assumed**, because a broad word could quietly
+pull in noise. All 39 `gold` headlines were about bullion — none about gold
+medals, Goldman or miners — and all 38 `ETH crypto` headlines name
+ETH/Ethereum. The trusted-source filter does most of this work: within the
+financial press, "gold" means the metal.
+
+**What was deliberately NOT done**: the rejected publishers were inspected
+first, to check whether the filter rather than the query was the constraint.
+They were mostly rate-quote pages and low-quality aggregators — Bybit (24
+entries of exchange-rate pages for THB alone), CurrencyNews.co.uk,
+exchangerates.org.uk, TradingView, Coinpedia. Adding them would have raised
+the counts by lowering the evidentiary standard, so the trusted list is
+unchanged.
+
+**Result**: tickers with >= 30 days of sentiment went from 7/30 (start of day)
+to **29/30**. `fact_news` 5,911 -> 7,512.
+
+**Accepted limitation — THBUSD=X (14 days)**: the only ticker still short, and
+not for want of trying. Every variant tested (`Thai baht`, `baht`, `USDTHB`,
+`baht dollar`, `Thailand currency`, `Thai baht dollar`) topped out at 8-9
+distinct days, with Bangkok Post as effectively the sole recurring publisher.
+USD/THB simply is not covered daily by the international financial press. This
+is a property of the asset's news coverage, not a pipeline defect, and should
+be stated as such — or THBUSD=X excluded from sentiment-based analysis.
