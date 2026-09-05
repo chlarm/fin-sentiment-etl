@@ -1,6 +1,25 @@
 # Slide Detail: การพัฒนาระบบท่อส่งข้อมูลอัตโนมัติและคลังข้อมูลเพื่อวิเคราะห์ความสัมพันธ์ระหว่างข่าวเศรษฐกิจและราคาหลักทรัพย์
 **เวลาพรีเซนต์:** 20 นาที | **จำนวนสไลด์:** 30 สไลด์
 
+> ## ⚠️ ปรับปรุง 5 ก.ย. 2026 — อ่านก่อนใช้
+>
+> ไฟล์นี้เขียนเมื่อ ก.ค. 2026 เนื้อหาบางส่วนไม่ตรงกับระบบและผลการวิจัยปัจจุบัน
+>
+> | ประเด็น | เดิม | ปัจจุบัน |
+> |---|---|---|
+> | URL เว็บบน Cloud Run | ใช้งานได้ | **ตอบ HTTP 500** — แคปหน้าจอจาก `http://localhost:8000` แทน |
+> | จำนวนสินทรัพย์ | 7 | **30** |
+> | หน้าต่างข่าว | 168 ชม. (7 วัน) | **2,160 ชม. (90 วัน)** |
+> | แท็บ Dashboard | 5 (มี Heatmap) | **7** (ถอด Heatmap เพิ่ม Signal, Fundamentals) |
+> | ผล Correlation | "รอข้อมูลสะสมแล้วจะสรุปได้" | **ข้อมูลพอแล้ว — ผลเป็นลบ** |
+>
+> ข้อสรุปปัจจุบัน: ทั้ง sentiment และงบการเงิน **ไม่แสดงความสัมพันธ์กับผลตอบแทน**
+> ที่รอดการตรวจสอบ 3 ชั้น (ค่าผิดปกติ / นอกกลุ่มตัวอย่าง / ขนาดตัวอย่างจริง)
+> รายละเอียดใน `thesis_methodology_revised.md`
+
+---
+
+
 ---
 
 ## สไลด์ 1 — ปกวิทยานิพนธ์
@@ -89,11 +108,12 @@
 
 **4 ขอบเขตหลัก:**
 
-**1. สินทรัพย์เป้าหมาย (Multi-Asset Class — 7 รายการ)**
-- US Equity: Apple (AAPL), Tesla (TSLA), Microsoft (MSFT)
-- Cryptocurrency: Bitcoin (BTC-USD)
-- Forex: EUR/USD, THB/USD
-- Commodity: Gold Futures (GC=F)
+**1. สินทรัพย์เป้าหมาย (Multi-Asset Class — 30 รายการ)**
+- US Equity (21): AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA, NFLX, AMD, ORCL, INTC, JPM, V, JNJ, XOM, PG, KO, WMT, HD, DIS, BA
+- Index (3): S&P 500 (^GSPC), Dow Jones (^DJI), Nasdaq (^IXIC)
+- Cryptocurrency (2): Bitcoin (BTC-USD), Ethereum (ETH-USD)
+- Forex (2): EUR/USD, THB/USD
+- Commodity (2): Gold Futures (GC=F), WTI Crude (CL=F)
 
 **2. แหล่งข้อมูล**
 - ราคา: Yahoo Finance (Primary) → Stooq (Failover)
@@ -321,7 +341,7 @@ Docker คือแพลตฟอร์ม Open-source สำหรับ Conta
 ```
 
 **Output ของแต่ละขั้น:**
-- ① ราคา OHLCV + pct_change ของ 7 สินทรัพย์
+- ① ราคา OHLCV + pct_change ของ 30 สินทรัพย์
 - ② พาดหัวข่าวจาก RSS พร้อม source, timestamp
 - ③ ข้อมูลสะอาด ไม่มี null, timestamp มาตรฐาน UTC
 - ④ sentiment_label + sentiment_score ต่อข่าว 1 ชิ้น
@@ -337,13 +357,17 @@ Docker คือแพลตฟอร์ม Open-source สำหรับ Conta
 
 **หัวข้อหลัก:** ดึงข้อมูลราคาอย่างไร?
 
-**สินทรัพย์เป้าหมาย 7 รายการ:**
-| ประเภท | Ticker | แหล่งข้อมูล |
-|-------|--------|------------|
-| US Equity | AAPL, TSLA, MSFT | Yahoo Finance (primary) |
-| Cryptocurrency | BTC-USD | Yahoo Finance |
-| Forex | EUR=X, THB=X | Yahoo Finance |
-| Commodity | GC=F (Gold Futures) | Yahoo Finance |
+**สินทรัพย์เป้าหมาย 30 รายการ:**
+| ประเภท | จำนวน | Ticker |
+|-------|-------|--------|
+| US Equity | 21 | AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA, NFLX, AMD, ORCL, INTC, JPM, V, JNJ, XOM, PG, KO, WMT, HD, DIS, BA |
+| Index | 3 | ^GSPC, ^DJI, ^IXIC |
+| Cryptocurrency | 2 | BTC-USD, ETH-USD |
+| Forex | 2 | EURUSD=X, THBUSD=X |
+| Commodity | 2 | GC=F (ทองคำ), CL=F (น้ำมันดิบ WTI) |
+
+*แหล่งข้อมูล: Yahoo Finance (primary) → Stooq (failover)*
+*ราคาย้อนหลังถึง 2006-09-11 รวม 145,918 แถว*
 
 **Fallback Mechanism:**
 - Yahoo Finance ล้ม → สลับไป **Stooq** อัตโนมัติ
@@ -370,7 +394,7 @@ Docker คือแพลตฟอร์ม Open-source สำหรับ Conta
 
 **Custom Filtering Pipeline (4 ขั้น):**
 
-1. **Age Filter** — ตัดข่าวเก่ากว่า 168 ชั่วโมง (7 วัน) ออก
+1. **Age Filter** — ตัดข่าวเก่ากว่า 2,160 ชั่วโมง (90 วัน) ออก *(เดิม 168 ชม. ซึ่งทิ้งข่าวที่ดึงมาได้แล้ว 67-91%)*
    - ข่าวเก่า = ตลาดรับรู้ไปแล้ว → เพิ่ม noise
 
 2. **Source Credibility Filter** — เก็บเฉพาะแหล่งน่าเชื่อถือ:
@@ -473,7 +497,7 @@ OUTPUT: sentiment_label = "positive", sentiment_score = +0.92
 
 | เกณฑ์ตรวจสอบ | รายละเอียด | ถ้าไม่ผ่าน |
 |-------------|-----------|-----------|
-| **Completeness** | ราคาครบ 7 สินทรัพย์หรือไม่? | Flag + แจ้ง alert |
+| **Completeness** | ราคาครบ 30 สินทรัพย์หรือไม่? | Flag + แจ้ง alert |
 | **Non-zero News** | มีข่าวถูกดึงเข้ารอบนี้หรือเปล่า? | Flag + แจ้ง alert |
 | **Null Check** | ไม่มีค่า null ในคอลัมน์สำคัญ (close, sentiment_score) | Reject แถวนั้น |
 | **Range Validation** | pct_change อยู่ในช่วงที่สมเหตุสมผลไหม? (เช่น ไม่เกิน ±50%) | Flag เป็น outlier |
@@ -667,12 +691,12 @@ DQ Checks (src/dq/checks.py)
 
 | รายการ | ผลลัพธ์ |
 |-------|---------|
-| URL | https://fin-web-nnebdwza6q-as.a.run.app |
+| URL | http://localhost:8000 |
 | HTTP Status | 200 OK |
 | Load Time | < 3 วินาที |
 | ข่าวทั้งหมด | **93 ข่าว** |
 | Pagination | 15 ข่าวต่อหน้า |
-| Chart ราคา | แสดงครบ 7 สินทรัพย์ |
+| Chart ราคา | แสดงครบ 30 สินทรัพย์ |
 | Sentiment Badge | แสดงสีถูกต้อง |
 | แปลภาษาไทย | ทำงาน on-demand |
 
@@ -813,7 +837,7 @@ DQ Checks (src/dq/checks.py)
 
 | # | วัตถุประสงค์ | ผลที่ได้ | สถานะ |
 |---|------------|---------|-------|
-| 1 | พัฒนา ETL Pipeline อัตโนมัติ | ดึงราคา 7 สินทรัพย์ + ข่าว RSS รายวัน พร้อมระบบ fallback (Stooq) และ deduplication | ✅ สำเร็จ |
+| 1 | พัฒนา ETL Pipeline อัตโนมัติ | ดึงราคา 30 สินทรัพย์ + ข่าว RSS รายวัน พร้อมระบบ fallback (Stooq) และ deduplication | ✅ สำเร็จ |
 | 2 | วิเคราะห์ sentiment ด้วย FinBERT | จำแนก positive/negative/neutral จากพาดหัวข่าวภาษาอังกฤษได้ถูกต้อง | ✅ สำเร็จ |
 | 3 | ออกแบบ Data Warehouse รูปแบบ Star Schema | สร้าง fin_dw บน Cloud SQL (PostgreSQL) พร้อม analytical view `vw_daily_asset_metrics` | ✅ สำเร็จ |
 | 4 | Deploy บน GCP แบบ Serverless | ระบบทำงานอัตโนมัติด้วย Cloud Run Job + Cloud Scheduler ทุกวันเวลา 18:00 น. | ✅ สำเร็จ |
@@ -833,7 +857,20 @@ DQ Checks (src/dq/checks.py)
 
 **5.2.1 — ผลการวิเคราะห์ความสัมพันธ์ (Correlation)**
 
-ผลการคำนวณ Pearson Correlation Coefficient ระหว่าง sentiment score และการเปลี่ยนแปลงราคา พบว่า **ข้อมูลที่สะสมไว้ยังไม่เพียงพอ** สำหรับการสรุปผลทางสถิติที่น่าเชื่อถือ เนื่องจากระบบเพิ่งเริ่ม deploy อย่างไรก็ตาม **โครงสร้างพื้นฐานด้านข้อมูลครบสมบูรณ์แล้ว** — เมื่อข้อมูลสะสมมากขึ้นตามเวลา สามารถนำ view `vw_daily_asset_metrics` ไปวิเคราะห์ได้ทันทีโดยไม่ต้องเปลี่ยน architecture
+**ปรับปรุง ก.ย. 2026 — ข้อมูลสะสมเพียงพอแล้ว และผลเป็นลบ**
+
+ข้อความเดิมระบุว่าข้อมูลยังไม่พอสรุปผล และคาดว่าเมื่อสะสมมากขึ้นจะวิเคราะห์ได้ ปัจจุบันมีสินทรัพย์ 29 จาก 30 รายการที่ข้อมูล sentiment ครบเกณฑ์ 30 วัน ครอบคลุม 9 เดือน ผลการวิเคราะห์คือ
+
+| ประเด็น | ผล |
+|---|---|
+| ความแม่นยำ (5 → 29 สินทรัพย์) | 0.635 → **0.483** (เส้นฐาน 0.590) |
+| ชนะเส้นฐาน (walk-forward) | 1/3 → **0/3 folds** |
+| AUC เมื่อเพิ่ม sentiment | **ลดลงทุกขอบเขตเวลา** (−0.013 ถึง −0.019) |
+| Pearson vs Spearman | ค่าที่ p<0.001 ส่วนใหญ่ **หายไปเมื่อวัดด้วยอันดับ** |
+
+ความได้เปรียบที่วัดได้ตอนมี 5 สินทรัพย์เป็นความผันผวนจากกลุ่มตัวอย่างขนาดเล็ก ปัจจัยที่ครอบงำผลคือการเปลี่ยนสภาวะตลาดระหว่างชุดฝึกและชุดทดสอบ (สัดส่วนวันขึ้น 0.438 → 0.590) ซึ่งข้อมูล 9 เดือนไม่พอจะฝึกให้ครอบคลุม
+
+โครงสร้างพื้นฐานด้านข้อมูลครบสมบูรณ์และใช้งานได้จริง — สิ่งที่เปลี่ยนคือคำตอบ ไม่ใช่ความพร้อมของระบบ
 
 **5.2.2 — ปัญหาที่พบและวิธีแก้ไข (จากตาราง 5.1 ในรายงาน):**
 
@@ -857,9 +894,9 @@ DQ Checks (src/dq/checks.py)
 |---|---------|-----------|---------|
 | 1 | **แหล่งข้อมูลเป็น Free Tier** | Google News RSS และ Yahoo Finance มี rate limit และไม่มี SLA รับประกัน | ข้อมูลอาจขาดหายหรือล่าช้าได้ |
 | 2 | **Batch Processing วันละ 1 ครั้ง** | ระบบดึงข้อมูลเพียงวันละครั้ง ไม่รองรับการวิเคราะห์ intraday | ไม่เหมาะกับการเทรดระยะสั้น |
-| 3 | **ครอบคลุมเพียง 7 สินทรัพย์** | มีเฉพาะหุ้น/crypto สากล ยังไม่รวมหุ้นไทย (SET) | ขอบเขตการวิเคราะห์จำกัด |
+| 3 | **ครอบคลุม 30 สินทรัพย์** | หุ้นสหรัฐ 21, ดัชนี 3, คริปโท 2, forex 2, โภคภัณฑ์ 2 — ยังไม่รวมหุ้นไทย (SET) | ขอบเขตการวิเคราะห์จำกัดเฉพาะตลาดสากล |
 | 4 | **Secrets เก็บใน Environment Variables** | API keys และ credentials ยังไม่ได้ใช้ Secret Manager | ความปลอดภัยต่ำกว่ามาตรฐาน production |
-| 5 | **ข้อมูลสะสมยังมีน้อย** | ระบบเพิ่งเริ่ม deploy จึงมีข้อมูลไม่เพียงพอสำหรับการวิเคราะห์สถิติ | ไม่สามารถสรุปผล correlation ได้อย่างมีนัยสำคัญ |
+| 5 | **ความลึกของ sentiment ไม่สมมาตร** | ราคา 20 ปี งบการเงิน 19 ปี แต่ sentiment มีเพียง 9 เดือน เพราะต้องสะสมเอง | ฝึกแบบจำลองข้ามสภาวะตลาดไม่ได้ — เป็นข้อจำกัดที่ครอบงำผลการวิจัย |
 
 > ข้อจำกัดเหล่านี้เป็น **known trade-off** ที่ยอมรับได้ในระดับ academic project และสามารถแก้ไขได้ในการพัฒนาต่อยอด
 
@@ -924,7 +961,7 @@ DQ Checks (src/dq/checks.py)
 - ครอบคลุมทุก layer ของ Data Engineering: Ingestion → Processing → Storage → Visualization → Orchestration
 - ออกแบบโดยยึดหลัก Idempotency, Fault Tolerance, และ Serverless-First
 
-**แนวทางต่อไป:** เมื่อข้อมูลสะสมเพียงพอ ระบบนี้จะเป็นฐานสำหรับการวิจัย correlation ระหว่าง media sentiment และการเคลื่อนไหวของราคาสินทรัพย์ได้อย่างมีนัยสำคัญทางสถิติ
+**ข้อสรุป:** ข้อมูลสะสมเพียงพอแล้วและได้วิเคราะห์จริง ผลเป็นลบ — ทั้ง sentiment และงบการเงินไม่แสดงความสัมพันธ์กับผลตอบแทนที่รอดการตรวจสอบ 3 ชั้น สอดคล้องกับสมมติฐานตลาดมีประสิทธิภาพรูปแบบกึ่งเข้ม คุณูปการของงานคือโครงสร้างข้อมูลและระเบียบวิธีที่ทำให้สรุปได้อย่างมั่นใจว่าไม่พบ
 
 ---
 

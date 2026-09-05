@@ -1,5 +1,24 @@
 # ระบบ ETL วิเคราะห์ความรู้สึกข่าวการเงินด้วยโมเดล FinBERT บน Google Cloud Platform
 
+> ## ⚠️ ปรับปรุง 5 ก.ย. 2026 — อ่านก่อนใช้
+>
+> ไฟล์นี้เขียนเมื่อ ก.ค. 2026 เนื้อหาบางส่วนไม่ตรงกับระบบและผลการวิจัยปัจจุบัน
+>
+> | ประเด็น | เดิม | ปัจจุบัน |
+> |---|---|---|
+> | URL เว็บบน Cloud Run | ใช้งานได้ | **ตอบ HTTP 500** — แคปหน้าจอจาก `http://localhost:8000` แทน |
+> | จำนวนสินทรัพย์ | 7 | **30** |
+> | หน้าต่างข่าว | 168 ชม. (7 วัน) | **2,160 ชม. (90 วัน)** |
+> | แท็บ Dashboard | 5 (มี Heatmap) | **7** (ถอด Heatmap เพิ่ม Signal, Fundamentals) |
+> | ผล Correlation | "รอข้อมูลสะสมแล้วจะสรุปได้" | **ข้อมูลพอแล้ว — ผลเป็นลบ** |
+>
+> ข้อสรุปปัจจุบัน: ทั้ง sentiment และงบการเงิน **ไม่แสดงความสัมพันธ์กับผลตอบแทน**
+> ที่รอดการตรวจสอบ 3 ชั้น (ค่าผิดปกติ / นอกกลุ่มตัวอย่าง / ขนาดตัวอย่างจริง)
+> รายละเอียดใน `thesis_methodology_revised.md`
+
+---
+
+
 **สถาบัน:** สถาบันเทคโนโลยีพระจอมเกล้าเจ้าคุณทหารลาดกระบัง (KMITL)
 **นักศึกษา:** [ชื่อ-นามสกุล] รหัส 66070324
 **อาจารย์ที่ปรึกษา:** [ชื่ออาจารย์]
@@ -20,7 +39,7 @@
 ---
 
 > **[รูปที่ 1.1]** แสดงตัวอย่างหน้า Web Dashboard ที่ทำงานบน Google Cloud Run  
-> 📸 แคปหน้าจอเว็บ https://fin-web-nnebdwza6q-as.a.run.app ทั้งหน้า รวมถึงส่วนกราฟและตาราง
+> 📸 แคปหน้าจอเว็บ http://localhost:8000 ทั้งหน้า รวมถึงส่วนกราฟและตาราง
 
 ---
 
@@ -142,8 +161,11 @@ URL Pattern: https://news.google.com/rss/search?q={search_term}%20market&hl=en-U
 ```
 
 รูปแบบการค้นหาใช้ `search_term` พิเศษสำหรับ Ticker ที่ชื่อยากค้นหา เช่น:
-- `GC=F` → ค้นหา "gold price USD"
-- `THBUSD=X` → ค้นหา "Thai baht USD exchange rate"
+- `GC=F` → ค้นหา `gold` *(เดิม "gold price USD futures" — วัดแล้วได้ข่าว 4 ชิ้น เทียบกับ 39 ชิ้น)*
+- `THBUSD=X` → ค้นหา `Thai baht` *(เดิม "Thai baht USD exchange rate" — 1 ชิ้น เทียบกับ 9 ชิ้น)*
+- `^GSPC` → ค้นหา `S&P 500` *(ต้อง percent-encode เครื่องหมาย & มิฉะนั้น query จะถูกตัดเหลือ `q=S`)*
+
+คำค้นทุกตัวถูกกำหนดจากการวัดกับ feed จริง ไม่ใช่การออกแบบตามสัญชาตญาณ รายละเอียดใน `thesis_methodology_revised.md` §3.3
 
 ---
 
@@ -182,7 +204,7 @@ pct_change = return_1d × 100
 ---
 
 > **[รูปที่ 3.3]** กราฟเปรียบเทียบราคาหุ้น (เส้นสีฟ้า) กับ Sentiment Score (แถบสีในกราฟ)  
-> 📸 แคปหน้าจอกราฟ "Market Dynamics" บนหน้า Dashboard ของ https://fin-web-nnebdwza6q-as.a.run.app
+> 📸 แคปหน้าจอกราฟ "Market Dynamics" บนหน้า Dashboard ของ http://localhost:8000
 
 ---
 
@@ -219,15 +241,15 @@ Web Dashboard พัฒนาด้วย FastAPI ซึ่งเป็น Web F
 2. **Daily Summary** — สรุปข่าวรายวันแยกตามสินทรัพย์ พร้อมตัวเลขสถิติ
 3. **Metrics** — ตารางราคาพร้อม Return และ Sentiment Index
 4. **Correlations** — ตารางค่าสหสัมพันธ์ (Pearson Correlation) ระหว่างผลตอบแทนและ News Sentiment ในวันเดียวกัน (corr_t) และ 1-2 วันล่าช้า (corr_lag1, corr_lag2)
-5. **Heatmap** — แผนที่ความร้อนแสดง Sentiment และ Return ล่าสุดของสินทรัพย์ทั้งหมด
+5. ~~**Heatmap**~~ *(ถอดออก ก.ย. 2026 — แสดงภาพรวมได้แต่ไม่ช่วยตัดสินใจ)* — เดิมเป็นแผนที่ความร้อนแสดง Sentiment และ Return ล่าสุดของสินทรัพย์ทั้งหมด
 
 ---
 
 > **[รูปที่ 3.5]** หน้า Web Dashboard แท็บ Correlations  
-> 📸 แคปหน้าจอเว็บโดย Click แท็บ Correlations บน https://fin-web-nnebdwza6q-as.a.run.app
+> 📸 แคปหน้าจอเว็บโดย Click แท็บ Correlations บน http://localhost:8000
 
 > **[รูปที่ 3.6]** หน้า Web Dashboard แท็บ Daily Summary  
-> 📸 แคปหน้าจอเว็บโดย Click แท็บ Daily Summary บน https://fin-web-nnebdwza6q-as.a.run.app
+> 📸 แคปหน้าจอเว็บโดย Click แท็บ Daily Summary บน http://localhost:8000
 
 ---
 
@@ -389,11 +411,11 @@ def send_email_alert(subject: str, body: str):
 
 | รายการ | ผลลัพธ์ |
 |---|---|
-| ETL Pipeline ทำงานสำเร็จ | ✅ สำเร็จ ใช้เวลา ~1 นาที 14 วินาทีต่อรอบ |
-| Web Dashboard เข้าถึงได้ | ✅ Public URL https://fin-web-nnebdwza6q-as.a.run.app |
+| ETL Pipeline ทำงานสำเร็จ | ✅ สำเร็จ — แยก 3 task รวม ~3 นาที (30 สินทรัพย์) |
+| Web Dashboard เข้าถึงได้ | ✅ รันบนเครื่องผ่าน Docker — http://localhost:8000 (7 แท็บ) |
 | ระบบแจ้งเตือน Email | ✅ ส่งอีเมลสรุปหลังรัน ETL ทุกครั้ง |
-| Cloud Scheduler ตั้งเวลาสำเร็จ | ✅ รันอัตโนมัติทุกวัน 08:00 น. (Asia/Bangkok) |
-| การเชื่อมต่อ Cloud SQL | ✅ Unix Socket ผ่าน Cloud SQL Auth Proxy |
+| Cloud Scheduler ตั้งเวลาสำเร็จ | ⏸ ทดสอบผ่านแล้ว แต่หยุดทำงาน (billing ปิด) — ปัจจุบันใช้ Airflow บนเครื่อง 06:00 น. |
+| การเชื่อมต่อ Cloud SQL | ⏸ instance อยู่สถานะ SUSPENDED — ปัจจุบันใช้ PostgreSQL ใน Docker |
 | สินทรัพย์ที่ติดตาม | 7 รายการ (AAPL, TSLA, MSFT, BTC-USD, EURUSD=X, THBUSD=X, GC=F) |
 
 ---
