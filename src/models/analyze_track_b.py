@@ -62,6 +62,33 @@ def _chronological_split(df: pd.DataFrame, date_col: str, test_fraction: float):
     return df[df[date_col] < cutoff], df[df[date_col] >= cutoff]
 
 
+# Ratio features here are arithmetically correct and statistically
+# pathological: dividing by a near-zero denominator produces values that are
+# real but meaningless. Observed in this panel — P/E of 10,545 (AMZN 2023Q1,
+# price 105 over trailing EPS of about a cent), EPS growth of -144, debt/equity
+# of 133 (AMD 2015, near-zero book equity). Untreated, a single such row in a
+# test split drove OLS to R^2 = -34, and Pearson r is nearly as fragile.
+WINSOR_LIMITS = (0.01, 0.99)
+
+
+def _winsorize_to(train: pd.DataFrame, frames: list[pd.DataFrame], cols: list[str]) -> list[pd.DataFrame]:
+    """Clip `cols` to the TRAINING set's 1st/99th percentiles.
+
+    Bounds come from train only. Taking them from the full panel would let the
+    test period influence its own preprocessing — a mild leak, but the whole
+    point of the chronological split is that nothing after the cutoff informs
+    what happens before it.
+    """
+    lo = train[cols].quantile(WINSOR_LIMITS[0])
+    hi = train[cols].quantile(WINSOR_LIMITS[1])
+    out = []
+    for f in frames:
+        g = f.copy()
+        g[cols] = g[cols].clip(lower=lo, upper=hi, axis=1)
+        out.append(g)
+    return out
+
+
 def _baseline_r2(y_train: pd.Series, y_test: pd.Series) -> float:
     """R^2 of the simplest honest forecast: predict the training mean for
     every test row. Not zero in general — sklearn's R^2 always compares
@@ -81,6 +108,7 @@ def _out_of_sample_ols(full: pd.DataFrame, target_col: str) -> dict | None:
     if len(train) < MIN_N_FOR_STATS or len(test) < MIN_N_FOR_STATS:
         return None
 
+    train, test = _winsorize_to(train, [train, test], FUNDAMENTAL_FEATURES)
     X_train, y_train = train[FUNDAMENTAL_FEATURES], train[target_col]
     X_test, y_test = test[FUNDAMENTAL_FEATURES], test[target_col]
 
@@ -133,6 +161,7 @@ def _walk_forward_r2(
         if len(train) < MIN_N_FOR_STATS or len(test) < min_fold_test:
             continue
 
+        train, test = _winsorize_to(train, [train, test], FUNDAMENTAL_FEATURES)
         model = LinearRegression().fit(train[FUNDAMENTAL_FEATURES], train[target_col])
         test_r2 = float(r2_score(test[target_col], model.predict(test[FUNDAMENTAL_FEATURES])))
         baseline_r2 = _baseline_r2(train[target_col], test[target_col])
@@ -151,14 +180,21 @@ def _correlation_table(panel: pd.DataFrame, horizon: int):
     target_col = f"fwd_ret_{horizon}d"
     print(f"\n--- horizon = {horizon}d (~{horizon/21:.1f} months) ---")
 
+    # Spearman leads because it ranks rather than measures: one P/E of 10,545
+    # moves Pearson r substantially and moves a rank correlation by one place.
+    # Pearson is printed alongside precisely so the gap is visible — where the
+    # two disagree, the Pearson figure is being driven by a handful of rows.
+    print(f"  {'feature':<20} {'n':>5} {'spearman':>9} {'p':>7}      {'pearson':>8} {'p':>7}")
     for feat in FUNDAMENTAL_FEATURES:
         sub = panel[[feat, target_col]].dropna()
         n = len(sub)
         if n < MIN_N_FOR_STATS:
-            print(f"  {feat:<20} n={n:>3}  (too small to test — need >= {MIN_N_FOR_STATS})")
+            print(f"  {feat:<20} {n:>5}  (too small to test — need >= {MIN_N_FOR_STATS})")
             continue
-        r, p = scipy_stats.pearsonr(sub[feat], sub[target_col])
-        print(f"  {feat:<20} n={n:>3}  r={r:+.3f}  p={p:.3f}  {_sig_stars(p)}")
+        rho, p_rho = scipy_stats.spearmanr(sub[feat], sub[target_col])
+        r, p_r = scipy_stats.pearsonr(sub[feat], sub[target_col])
+        print(f"  {feat:<20} {n:>5} {rho:>+9.3f} {p_rho:>7.3f} {_sig_stars(p_rho):<4} "
+              f"{r:>+8.3f} {p_r:>7.3f} {_sig_stars(p_r)}")
 
     # multi-feature linear regression, chronologically held out — see
     # _out_of_sample_ols for why this is no longer an in-sample number.

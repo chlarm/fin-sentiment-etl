@@ -113,3 +113,54 @@ class TestWalkForwardR2:
         for f in folds:
             assert f["n_test"] > 0
             assert isinstance(f["beats_baseline"], bool)
+
+
+class TestWinsorize:
+    """Ratio features here can be arithmetically correct and statistically
+    ruinous — a P/E of 10,545 arises from dividing by a cent of trailing EPS.
+    One such row in a test split drove OLS to R^2 = -34."""
+
+    def _frames(self):
+        train = pd.DataFrame({f: np.linspace(0, 100, 101) for f in FUNDAMENTAL_FEATURES})
+        test = pd.DataFrame({f: [-500.0, 50.0, 10_545.0] for f in FUNDAMENTAL_FEATURES})
+        return train, test
+
+    def test_extreme_test_values_are_clipped_to_train_bounds(self):
+        from src.models.analyze_track_b import _winsorize_to
+        train, test = self._frames()
+        _, clipped = _winsorize_to(train, [train, test], FUNDAMENTAL_FEATURES)
+        f = FUNDAMENTAL_FEATURES[0]
+        assert clipped[f].max() <= train[f].quantile(0.99)
+        assert clipped[f].min() >= train[f].quantile(0.01)
+        assert clipped[f].iloc[1] == 50.0  # an in-range value is untouched
+
+    def test_bounds_come_from_train_only(self):
+        """Using full-panel percentiles would let the test period influence its
+        own preprocessing, defeating the chronological split."""
+        from src.models.analyze_track_b import _winsorize_to
+        train, test = self._frames()
+        wide = pd.concat([train, test], ignore_index=True)
+        _, from_train = _winsorize_to(train, [train, test], FUNDAMENTAL_FEATURES)
+        _, from_all = _winsorize_to(wide, [train, test], FUNDAMENTAL_FEATURES)
+        f = FUNDAMENTAL_FEATURES[0]
+        assert from_train[f].max() < from_all[f].max()
+
+    def test_regression_no_longer_explodes_on_an_outlier(self):
+        from sklearn.linear_model import LinearRegression
+        from sklearn.metrics import r2_score
+        from src.models.analyze_track_b import _winsorize_to
+        rng = np.random.default_rng(0)
+        n = 300
+        tr = pd.DataFrame({f: rng.normal(size=n) for f in FUNDAMENTAL_FEATURES})
+        tr["y"] = rng.normal(size=n)
+        te = pd.DataFrame({f: rng.normal(size=40) for f in FUNDAMENTAL_FEATURES})
+        te["y"] = rng.normal(size=40)
+        te.loc[0, FUNDAMENTAL_FEATURES[0]] = 10_545.0   # the AMZN P/E case
+
+        m = LinearRegression().fit(tr[FUNDAMENTAL_FEATURES], tr["y"])
+        raw = r2_score(te["y"], m.predict(te[FUNDAMENTAL_FEATURES]))
+        tr_w, te_w = _winsorize_to(tr, [tr, te], FUNDAMENTAL_FEATURES)
+        m2 = LinearRegression().fit(tr_w[FUNDAMENTAL_FEATURES], tr_w["y"])
+        fixed = r2_score(te_w["y"], m2.predict(te_w[FUNDAMENTAL_FEATURES]))
+        assert raw < -1.0        # untreated: catastrophic
+        assert fixed > -0.5      # treated: merely unhelpful, which is the truth

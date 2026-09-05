@@ -590,3 +590,83 @@ than being taken on faith. Track A's honest conclusion is that daily news
 sentiment, as captured here, carries no exploitable short-horizon directional
 information at the sample sizes available, and the technical-only baseline
 does not beat a majority rule either (78,528 rows, 30 tickers, ~10 years).
+
+---
+
+## 2026-09-05 — Track B review: two bugs invalidated the old numbers, and the corrected result is still null
+
+Reviewing Track B found that its published figures could not be trusted for
+two independent reasons. Both are fixed; the conclusion after fixing is
+unchanged in direction and much stronger in evidence.
+
+### Bug 1 — 39% of the panel was anchored to the wrong date
+
+`_nearest_price_on_or_after()` used `searchsorted` with no bound, so any
+announcement predating the price history silently returned the *first stored
+day*. Price history began 2016-07-14 while EDGAR fundamentals reach back to
+2007, so **445 of 1,134 rows paired 2007-2016 fundamentals with the forward
+return measured from July 2016** — and, all sharing one anchor date, repeated
+the same ~21 return values hundreds of times. Nothing raised; the panel looked
+full and well-populated.
+
+Symptom that exposed it: 27.7 rows per anchor quarter across 21 tickers, which
+is arithmetically impossible for one row per ticker-quarter. Distinct anchor
+quarters were 41 where ~76 were expected.
+
+Fixed with a 7-day tolerance (weekends and holidays are the only legitimate
+delay), covered by `tests/test_dataset_fundamentals.py`. Rather than drop the
+445 rows, price history was backfilled to 2006-09-11 (`backfill_price_history
+--years 20`, 78,528 -> 145,918 rows), which makes them real observations:
+panel back to 1,134 rows, distinct anchor quarters 41 -> 69, max rows in a
+single ticker-quarter 36 -> 9.
+
+### Bug 2 — untreated ratio outliers
+
+The ratio features are arithmetically correct and statistically ruinous when a
+denominator approaches zero. Observed in this panel: **P/E of 10,545** (AMZN
+2023Q1 — price 105 over about a cent of trailing EPS), EPS growth of **-144**,
+debt/equity of **133** (AMD 2015, near-zero book equity). One such row in a
+test split drove OLS to **R^2 = -34**.
+
+Features are now winsorized at the 1st/99th percentile, with bounds taken from
+the *training* set only — full-panel bounds would let the test period shape its
+own preprocessing and defeat the chronological split. Test R^2 went from -5.5 /
+-9.9 / -4.5 to **-0.045 / -0.117 / -0.064**.
+
+### The corrected result: nothing survives
+
+Pearson r is nearly as outlier-fragile as OLS, so Spearman is now reported
+first, with Pearson alongside so the gap is visible. Where they disagree, the
+Pearson figure is being carried by a handful of rows:
+
+| feature @ horizon | Pearson | Spearman |
+|---|---|---|
+| revenue_growth_qoq @ 63d | **+0.254 \*\*\*** | +0.046 (ns) |
+| revenue_growth_qoq @252d | **+0.237 \*\*\*** | +0.041 (ns) |
+| net_margin @252d | **−0.228 \*\*\*** | −0.053 (\*) |
+| margin_delta_qoq @126d | +0.229 \*\*\* | +0.109 \*\*\* |
+
+Out-of-sample, no horizon beats a train-mean baseline, and walk-forward beats
+it in only 1-2 of 5 folds — those "wins" being less-negative R^2, not positive.
+
+**And the survivors do not survive the sample size either.** Nominal n treats
+1,100 rows as independent observations. They are not: forward-return windows
+overlap (a 252-day return sampled quarterly overlaps the next by ~4x) and
+tickers within a quarter move together (mean pairwise rho of 0.13-0.17 across
+21 tickers, a design effect of 4.2-5.3x). Effective n is roughly 228 / 131 / 51
+rather than ~1,100:
+
+| feature | rho | p (nominal) | p (effective n) |
+|---|---|---|---|
+| margin_delta_qoq @126d | +0.109 | 0.000 | **0.221** |
+| margin_delta_qoq @ 63d | +0.067 | 0.027 | **0.319** |
+| pe_ratio @252d | −0.072 | 0.030 | **0.648** |
+
+With 18 tests run (6 features x 3 horizons), about one p<0.05 is expected by
+chance alone.
+
+**Conclusion for the thesis**: quarterly fundamentals, as measured here, show
+no relationship to subsequent returns that survives outlier treatment,
+out-of-sample validation, or an honest accounting of the sample size. This is
+a defensible negative result, and it is now the second one — Track A reached
+the same verdict for sentiment on the same day.

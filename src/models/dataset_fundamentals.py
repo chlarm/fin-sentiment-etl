@@ -10,14 +10,35 @@ FUNDAMENTAL_FEATURES = [
 ]
 
 
-def _nearest_price_on_or_after(price_series: pd.Series, target_date) -> tuple:
+# An announcement should be followed by a trading day within a few days —
+# weekends and holidays are the only legitimate delay. Anything further means
+# there is no price history from that era at all.
+MAX_ANCHOR_GAP_DAYS = 7
+
+
+def _nearest_price_on_or_after(price_series: pd.Series, target_date,
+                               max_gap_days: int = MAX_ANCHOR_GAP_DAYS) -> tuple:
     """price_series: index=date, values=close, sorted ascending, for one ticker.
     Returns (date_used, close) for the first trading day >= target_date, or
-    (None, None) if there isn't one yet (e.g. announcement is too recent)."""
+    (None, None) if there isn't one within `max_gap_days`.
+
+    The gap check is not a nicety. Without it, searchsorted returns the first
+    stored day for ANY target that predates the price history, so every
+    announcement before it silently anchors to that same day. Price history
+    began 2016-07-14, and EDGAR fundamentals reach back to 2007, so 445 of
+    1,134 panel rows (39%) were pairing 2007-2016 fundamentals with the
+    forward return measured from July 2016 — and, all sharing one anchor date,
+    duplicating the same ~21 return values hundreds of times. Those rows are
+    unusable rather than merely imprecise, so they are dropped; extending the
+    price history is what makes them real observations again.
+    """
     idx = price_series.index.searchsorted(target_date)
     if idx >= len(price_series):
         return None, None
-    return price_series.index[idx], price_series.iloc[idx]
+    found = price_series.index[idx]
+    if (pd.Timestamp(found) - pd.Timestamp(target_date)).days > max_gap_days:
+        return None, None
+    return found, price_series.iloc[idx]
 
 
 def _price_n_trading_days_after(price_series: pd.Series, anchor_date, n: int) -> float | None:
