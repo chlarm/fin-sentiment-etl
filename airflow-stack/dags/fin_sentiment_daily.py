@@ -23,9 +23,8 @@ def on_failure_callback(context):
     catch Python exceptions — it cannot fire when the process is killed by a
     signal. Every real failure so far has been exactly that case: the runs on
     2026-07-18/19/24 all hung and were SIGTERMed (exit -15), so no alert was
-    sent and three days of news went silently unfetched. Since Google News
-    RSS has no historical archive, a day missed here is lost permanently,
-    which makes silent failure the expensive kind.
+    sent and three days of news went silently unfetched — and nobody knew for
+    days, which is what makes silent failure the expensive kind.
 
     This callback runs in the task-runner process, which is NOT the shell the
     BashOperator sources .env.airflow into — so the credentials have to be
@@ -58,10 +57,11 @@ def on_failure_callback(context):
                 f"Run: {run_id}\n"
                 f"Attempt: {try_number}\n"
                 f"Reason: {reason}\n\n"
-                "Note: news/sentiment for this run's date cannot be backfilled "
-                "(Google News RSS returns current headlines only). Re-run the DAG "
-                "soon to limit the gap; prices and technical indicators will catch "
-                "up on their own from the full history."
+                "Note: re-run the DAG soon. Prices and technical indicators "
+                "rebuild themselves from full history. News is recoverable too "
+                "— the RSS lookback reaches back ~90 days — but each query "
+                "returns a capped ~100 entries, so the longer the gap, the "
+                "thinner the recovered coverage for the days inside it."
             ),
         )
     except Exception as exc:  # noqa: BLE001 - never let alerting hide the real failure
@@ -108,13 +108,13 @@ with DAG(
             execution_timeout=timedelta(minutes=timeout_minutes),
         )
 
-    # Prices and news are deliberately independent. News is the half that
-    # cannot be recovered — Google News RSS has no archive, so a day not
-    # fetched is gone — while prices and technical indicators can always be
-    # rebuilt from history. Running them as one task meant a stall in the slow,
-    # model-loading half also rolled back the fast, reliable one.
+    # Prices and news are deliberately independent: running them as one task
+    # meant a stall in the slow, model-loading half also rolled back the fast,
+    # reliable one. News still deserves the larger timeout — it now scores a
+    # 90-day lookback rather than 7 (see src/config.py), though only articles
+    # not already stored are passed to FinBERT.
     fetch_prices = etl_stage("fetch_prices", "prices", timeout_minutes=15)
-    fetch_news = etl_stage("fetch_news", "news", timeout_minutes=20)
+    fetch_news = etl_stage("fetch_news", "news", timeout_minutes=30)
 
     # Reports on the database rather than on this run, so the summary is still
     # accurate when one of the two above failed. Runs regardless of their

@@ -16,7 +16,7 @@ import pandas as pd
 from src.config import Settings
 from src.common.db import get_engine
 from src.common.hashing import build_news_hash
-from src.extract.news_rss import fetch_news_rss_for_ticker
+from src.extract.news_rss import fetch_news_rss_for_ticker, google_news_rss_url
 from src.transform.sentiment import VaderScorer
 from src.transform.sentiment_index import build_daily_sentiment_index
 from src.load.dim import ensure_assets, ensure_source, ensure_dim_dates
@@ -51,18 +51,10 @@ def main() -> None:
     # Build news URL per ticker (same logic as daily run)
     search_terms = settings.ticker_search_terms
 
-    def _news_url(ticker: str) -> str:
-        search_q = search_terms.get(ticker, ticker)
-        q_encoded = search_q.replace(" ", "%20")
-        return (
-            "https://news.google.com/rss/search"
-            f"?q={q_encoded}%20market&hl=en-US&gl=US&ceid=US:en"
-        )
-
     # Fetch news for all tickers
     news_items = []
     for t in settings.tickers:
-        feed_url = _news_url(t)
+        feed_url = google_news_rss_url(search_terms.get(t, t))
         items = fetch_news_rss_for_ticker(
             ticker=t,
             rss_template=feed_url,

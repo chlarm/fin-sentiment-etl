@@ -88,7 +88,17 @@ class Settings:
             "msn,business insider,motley fool,benzinga,the street,zacks,coindesk,cointelegraph,meyka,polymarket"
         ).split(",") if s.strip()
     ])
-    lookback_hours: int = int(_get("LOOKBACK_HOURS", "168"))
+    # 90 days, not 7. A Google News RSS query returns ~100 entries reaching
+    # back ~140 days, and the old 168h value discarded most of them: measured
+    # on 2026-09-05 across 10 tickers, trusted-source articles went 171 (7d)
+    # -> 250 (30d) -> 507 (90d). Widening costs nothing at fetch time — it is
+    # the same single HTTP request either way, and the filter is applied to
+    # entries already in hand — and run_daily.stage_news skips FinBERT for
+    # articles already stored, so re-seeing the back-catalogue each night is
+    # cheap. The practical effect is that a run after a gap backfills the gap
+    # instead of losing it. 90d rather than the full ~140d because coverage
+    # past that point is thin and varies by ticker.
+    lookback_hours: int = int(_get("LOOKBACK_HOURS", "2160"))
     intraday_lookback_hours: int = int(_get("INTRADAY_LOOKBACK_HOURS", "3"))
     pipeline_tz: str = _get("PIPELINE_TZ", "Asia/Bangkok")
     news_debug: bool = _get_bool("NEWS_DEBUG", "1")

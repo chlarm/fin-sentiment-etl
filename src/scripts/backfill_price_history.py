@@ -6,10 +6,13 @@ Unlike backfill.py (which reruns the whole daily ETL — FinBERT model + RSS new
 once per calendar day), this script only touches prices, in one/few batched
 network calls, so pulling 10 years of history takes seconds instead of hours.
 
-News/sentiment history cannot be backfilled the same way: Google News RSS only
-ever returns *current* headlines, so historical sentiment can only accumulate
-day by day from whenever the daily ETL starts running. This script intentionally
-does not attempt to fake that.
+News/sentiment history does not backfill the same way, though not for the
+reason previously claimed here. Google News RSS does reach back — roughly 140
+days per query — but it caps each query at ~100 entries, so a single fetch
+spreads thinly over that span while running daily accumulates far denser
+coverage. `run_daily.py --stage news` recovers what a gap missed (its lookback
+is 90 days); there is simply no way to reconstruct years of it. This script
+intentionally does not attempt to fake that.
 
 Usage:
     python -m src.scripts.backfill_price_history

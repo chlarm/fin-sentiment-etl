@@ -53,13 +53,16 @@ trusted-source filter cannot be independently verified for that period.
 (AAPL, MSFT, TSLA, BTC-USD, EURUSD=X, THBUSD=X, GC=F) while `.env` used for
 local runs had all 30. Synced to all 30.
 
-**Why it matters**: News/sentiment cannot be backfilled (Google News RSS
-returns only current headlines), so only the scheduled daily run accumulates
-it. Any ticker missing from the Airflow list permanently lost a day of
-sentiment coverage for every day it stayed missing. This — not the RSS query
-wording — is the main reason coverage was so uneven: AAPL/MSFT/TSLA reached
-~90 days while the other 23 tickers had almost none until a few manual runs
-in July 2026.
+**Why it matters**: only the scheduled daily run accumulates sentiment, so any
+ticker missing from the Airflow list lost coverage for every day it stayed
+missing. This — not the RSS query wording — is the main reason coverage was so
+uneven: AAPL/MSFT/TSLA reached ~90 days while the other 23 tickers had almost
+none until a few manual runs in July 2026.
+
+**Correction (2026-09-05)**: this entry originally justified the above with
+"News/sentiment cannot be backfilled (Google News RSS returns only current
+headlines)." That is false — see the 2026-09-05 entry below. The days lost
+here were recoverable and have since been recovered.
 
 **Limitation to state in the thesis**: sentiment coverage per ticker is a
 function of when that ticker entered the scheduled pipeline, not of news
@@ -276,9 +279,9 @@ so the report still goes out on a failed night. Previously all of it shared
 one transaction and one task, which coupled failures that have nothing to do
 with each other: news needs FinBERT and 30 RSS feeds and is the slow, fragile
 half, while prices are fast and reliable — and yet a stall in the former rolled
-back the latter. The asymmetry matters because news cannot be refetched (Google
-News RSS has no archive) while prices and technical indicators can always be
-rebuilt from stored history.
+back the latter. (This paragraph originally added "because news cannot be
+refetched (Google News RSS has no archive)"; that justification was wrong — see
+2026-09-05 — but the split is still right on its own merits.)
 
 **`smtplib` had no timeout** (`src/alerting.py`): `SMTP_SSL` blocks forever on
 a socket that connects but never replies. That call sits at the very end of
@@ -339,3 +342,71 @@ but that is a real weekly count now, not zero.
 **Same caveat as before applies**: Google News' ranking for a query drifts.
 Re-measure with `search_term_experiment.py`-style live queries before changing
 this again rather than assuming the current numbers hold indefinitely.
+
+---
+
+## 2026-09-05 — "News cannot be backfilled" was wrong; lookback 7d -> 90d
+
+**The claim being retracted**: several entries above, plus comments in
+`run_daily.py`, `backfill_price_history.py` and the DAG, stated that Google
+News RSS "returns only current headlines" / "has no archive", so a day not
+fetched was lost permanently. That was never measured. It is false.
+
+**What the feed actually does**: one query returns ~100 entries reaching back
+roughly 140 days. What discarded the older ones was our own `LOOKBACK_HOURS`
+filter — applied client-side to entries already in hand, not a fetch parameter.
+Measured across 10 tickers, trusted-source articles kept:
+
+| window | articles |
+|---|---|
+| 168h (7d, old default) | 171 |
+| 720h (30d) | 250 |
+| 2160h (90d, new default) | 507 |
+
+**Why it went unnoticed for so long**: the belief was self-confirming. With a
+7-day filter every run only ever saw a week of news, so the data always looked
+like a feed that only carries a week of news.
+
+**Changed**: `LOOKBACK_HOURS` 168 -> 2160 in `src/config.py`, `.env`,
+`.env.airflow`. Two supporting fixes were required for that to mean anything:
+
+1. `stage_news` now dedupes by `news_hash` *before* FinBERT scoring. Without
+   it, every night re-scores the whole 90-day back-catalogue; with it, cost is
+   proportional to genuinely new articles (a catch-up run scored 857 of 1,329
+   fetched, the next 331 of 1,308).
+2. `stage_news` rebuilds the daily sentiment index across the whole lookback
+   window rather than the last 7 days. Without this the widened fetch would
+   have silently changed nothing user-visible: old articles reach `fact_news`
+   but `fact_sentiment_daily` — what the model and dashboard read — would still
+   only cover a week.
+
+**Result of the catch-up run**: the 2026-08-14 → 09-05 gap (22 days, created by
+the machine being powered off, not by any code failure) is filled — every day
+in it now has news. Tickers with >= 30 days of sentiment, the threshold Track A
+needs, went from **7/30 to 26/30**. `fact_news` 5,911 -> 7,099;
+`fact_sentiment_daily` 991 -> 1,487.
+
+Recovered days are thinner than live-fetched ones (5-28 articles/day vs
+90-154), which is the ~100-entry cap showing through. Running daily still
+matters; it just is not the difference between data and no data.
+
+**Still under 30 days**: GC=F (29), EURUSD=X (19), ETH-USD (13), THBUSD=X (7) —
+all non-equities whose natural-language search terms return few
+trusted-source hits.
+
+---
+
+## 2026-09-05 — Unescaped '&' broke the ^GSPC search for months
+
+**What**: both ETLs built the RSS URL with `search_q.replace(" ", "%20")`,
+which escapes spaces and nothing else. The ^GSPC term is "S&P 500 stock market
+index", so the raw `&` ended the `q=` parameter and Google received `q=S` —
+^GSPC was searching for the letter S.
+
+**Why it was invisible**: the malformed query still returned ~100 well-formed
+entries, so the feed looked healthy. Only the kept-after-filtering count gave
+it away (3 of 102). Percent-encoding the query takes it to 43, and ^GSPC over
+the 30-day threshold.
+
+Both call sites now use `google_news_rss_url()` in `src/extract/news_rss.py`,
+covered by `tests/test_news_rss.py`.

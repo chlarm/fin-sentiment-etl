@@ -4,10 +4,13 @@ Daily ETL, split into independent stages.
 Why stages. Everything used to run inside one transaction and one Airflow
 task, which coupled failures that have nothing to do with each other: loading
 FinBERT and fetching 30 RSS feeds is slow and flaky, price ingestion is fast
-and reliable, and yet a stall in the former rolled back the latter. Worse, the
-one thing that must never be lost is news — Google News RSS has no archive, so
-a day not fetched is gone permanently — while prices and technical indicators
-can always be recomputed from history.
+and reliable, and yet a stall in the former rolled back the latter.
+
+News is still the more valuable half to protect — its density depends on how
+often we actually run, since each RSS query returns a capped ~100 entries —
+but the stronger claim this docstring used to make, that a day not fetched is
+"gone permanently", was wrong and is corrected in DATA_DECISIONS.md: the feed
+reaches back ~140 days, so a run after a gap does recover much of it.
 
 Each stage now commits on its own and can run as its own Airflow task:
 
@@ -26,16 +29,18 @@ Usage:
 """
 from __future__ import annotations
 import argparse
+import math
 from datetime import timedelta
 import pendulum
 import pandas as pd
+from sqlalchemy import text
 
 from src.config import Settings
 from src.common.db import get_engine
 from src.common.hashing import build_news_hash
 from src.extract.prices_yahoo import fetch_daily_prices_yahoo
 from src.extract.prices_stooq import fetch_daily_prices_stooq
-from src.extract.news_rss import fetch_news_rss_for_ticker
+from src.extract.news_rss import fetch_news_rss_for_ticker, google_news_rss_url
 from src.transform.price_features import add_return_features
 from src.transform.sentiment import FinbertScorer
 from src.transform.sentiment_index import build_daily_sentiment_index
@@ -124,8 +129,27 @@ def stage_news(settings: Settings, engine, run_d) -> None:
     """RSS, FinBERT scoring and the daily sentiment index.
 
     Kept apart from prices because this is the slow, fragile half — the model
-    load alone can stall on a Hugging Face hub call — and because it is the
-    half whose data cannot be recovered if a day is missed.
+    load alone can stall on a Hugging Face hub call.
+
+    It is NOT, as this docstring claimed until 2026-09-05, the half whose data
+    cannot be recovered. A Google News RSS query returns ~100 entries reaching
+    back roughly 140 days, so a run that happens after a gap can still pick up
+    what it missed; what threw the older entries away was our own
+    LOOKBACK_HOURS filter, not the feed. See DATA_DECISIONS.md.
+
+    Two things have to hold for a wide lookback to actually be useful, and
+    neither did before:
+
+    1. Articles already in fact_news must not be re-scored. Every run re-fetches
+       the same back-catalogue, and FinBERT is the expensive step; deduplicating
+       by news_hash *before* scoring (rather than relying on the INSERT's
+       ON CONFLICT afterwards) is what keeps the cost proportional to genuinely
+       new articles instead of to the window width.
+    2. The daily sentiment index must be rebuilt across the whole window. It
+       used to rebuild only the last 7 days, so anything older would land in
+       fact_news and never reach fact_sentiment_daily — the table the model and
+       dashboard actually read. Widening the fetch without this would have
+       looked like it worked and changed nothing.
     """
     print("Loading FinBERT Model...")
     scorer = FinbertScorer()
@@ -134,20 +158,11 @@ def stage_news(settings: Settings, engine, run_d) -> None:
     now_utc = pendulum.now("UTC")
     search_terms = settings.ticker_search_terms
 
-    def _news_url(ticker: str) -> str:
-        """Return the RSS URL for a ticker, using override search terms when available."""
-        search_q = search_terms.get(ticker, ticker)
-        q_encoded = search_q.replace(" ", "%20")
-        return (
-            "https://news.google.com/rss/search"
-            f"?q={q_encoded}%20market&hl=en-US&gl=US&ceid=US:en"
-        )
-
     news_items = []
     for t in settings.tickers:
         items = fetch_news_rss_for_ticker(
             ticker=t,
-            rss_template=_news_url(t),
+            rss_template=google_news_rss_url(search_terms.get(t, t)),
             lookback_hours=settings.lookback_hours,
             now_utc=now_utc,
             trusted_sources=settings.trusted_news_sources,
@@ -156,40 +171,70 @@ def stage_news(settings: Settings, engine, run_d) -> None:
         news_items.extend(items)
     print(f"[news] fetched {len(news_items)} items across {len(settings.tickers)} tickers")
 
+    # The rebuild window has to span everything the fetch could have returned,
+    # or older articles reach fact_news but never fact_sentiment_daily. Rounded
+    # UP to whole days: date arithmetic drops the sub-day remainder, so a
+    # lookback that isn't a multiple of 24 would otherwise leave the oldest day
+    # partly outside the window it was fetched under.
+    window_start = run_d - timedelta(days=math.ceil(settings.lookback_hours / 24))
+
     with engine.begin() as conn:
-        ensure_dim_dates(conn, run_d - timedelta(days=60), run_d)
         asset_map = ensure_assets(conn, list(settings.tickers))
 
-        news_rows = []
+        # Identify every candidate first, WITHOUT scoring: the hash depends
+        # only on the article, so it can be computed before FinBERT runs.
+        candidates = []
         for item in news_items:
             asset_id = asset_map.get(item.ticker)
             if not asset_id:
                 continue
-
-            source_id = ensure_source(conn, item.source_name, "rss", item.base_url)
-            s = scorer.score(item.title)
-
-            published_d = pendulum.instance(item.published_at_utc).date()
-            ensure_dim_dates(conn, published_d, published_d)
-
-            published_iso = pendulum.instance(item.published_at_utc).to_iso8601_string()
-            nh = build_news_hash(item.ticker, published_iso, item.title, item.url)
-
-            news_rows.append({
+            published_at = pendulum.instance(item.published_at_utc)
+            candidates.append({
+                "item": item,
                 "asset_id": asset_id,
-                "source_id": source_id,
+                "published_d": published_at.date(),
+                "news_hash": build_news_hash(
+                    item.ticker, published_at.to_iso8601_string(), item.title, item.url),
+            })
+
+        already_stored = set()
+        if candidates:
+            already_stored = {
+                r[0] for r in conn.execute(
+                    text("SELECT news_hash FROM fact_news WHERE news_hash = ANY(:hashes)"),
+                    {"hashes": [c["news_hash"] for c in candidates]},
+                )
+            }
+        fresh = [c for c in candidates if c["news_hash"] not in already_stored]
+        print(f"[news] {len(candidates)} candidates, {len(already_stored)} already stored, "
+              f"{len(fresh)} to score")
+
+        if fresh:
+            dates = [c["published_d"] for c in fresh]
+            ensure_dim_dates(conn, min(dates), max(dates))
+        # dim_date must also cover the index window even when nothing is new,
+        # since the rebuild below joins against it.
+        ensure_dim_dates(conn, window_start, run_d)
+
+        news_rows = []
+        for c in fresh:
+            item = c["item"]
+            s = scorer.score(item.title)
+            news_rows.append({
+                "asset_id": c["asset_id"],
+                "source_id": ensure_source(conn, item.source_name, "rss", item.base_url),
                 "published_at": item.published_at_utc,
-                "published_d": published_d,
+                "published_d": c["published_d"],
                 "title": item.title,
                 "url": item.url,
-                "news_hash": nh,
+                "news_hash": c["news_hash"],
                 "sentiment_score": s.score,
                 "sentiment_label": s.label,
             })
 
         news_attempted = insert_news(conn, news_rows)
 
-        # Build daily sentiment index from DB (last 7 days)
+        # Rebuild the daily sentiment index across the whole fetch window.
         df_news = pd.read_sql(
             """
             SELECT asset_id, published_d, sentiment_score, sentiment_label
@@ -197,12 +242,12 @@ def stage_news(settings: Settings, engine, run_d) -> None:
             WHERE published_d BETWEEN %(s)s AND %(e)s
             """,
             conn,
-            params={"s": run_d - timedelta(days=7), "e": run_d},
+            params={"s": window_start, "e": run_d},
         )
         si_cnt = upsert_daily_sentiment(conn, build_daily_sentiment_index(df_news))
 
-    print(f"[news] attempted {news_attempted} inserts (dedup by news_hash), "
-          f"{si_cnt} sentiment-index rows")
+    print(f"[news] inserted {news_attempted} new articles, "
+          f"rebuilt {si_cnt} sentiment-index rows since {window_start}")
 
 
 def stage_dq(settings: Settings, engine, run_d) -> None:

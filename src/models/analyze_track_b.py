@@ -4,12 +4,20 @@ Track B (medium/long horizon, 1 quarter - 1 year): does a stock's fundamentals
 (growth, margins, leverage, valuation) at the time its earnings were announced
 correlate with its subsequent return?
 
-Deliberately NOT a black-box classifier: with only ~100 (ticker, quarter) rows
-total, any ML model would be fitting noise, not signal — see the small n
-warnings printed for every result below. Correlation + regression with
-explicit p-values and sample sizes is the honest way to look at a panel this
-small; a classifier's 70% "accuracy" on n=20 would be meaningless and
-misleading in a way a plain r/p-value table is not.
+Still deliberately a correlation/regression study, not a classifier like
+Track A — see DATA_DECISIONS.md on why Q4 derivation was rejected; a chunk of
+this panel's "quarters" are genuinely as-filed and clean, but treating a
+6-feature linear fit as if it deserved SHAP-level interpretability would
+overstate what a panel this size supports. That said, the panel itself is no
+longer the ~106-row set this reasoning was originally written against — SEC
+EDGAR brought it to 1,134 fundamentals rows and ~700-1,050 usable (ticker,
+quarter) observations per horizon after joining to price history. The
+multi-feature regression below is fit on real data now, which is exactly why
+it needed the same discipline Track A already has: a chronological
+train/test split and a baseline to beat, not an in-sample R^2 computed on
+the same rows it was fit to (what this script reported until 2026-07-29,
+labeled "indicative only" because it was — R^2 on training data always looks
+better than the model actually generalizes, and doesn't say by how much).
 
 Usage:
     python -m src.models.analyze_track_b
@@ -20,6 +28,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats as scipy_stats
 from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
 
 from src.config import Settings
 from src.common.db import get_engine
@@ -30,6 +39,12 @@ warnings.filterwarnings("ignore")
 HORIZONS = [63, 126, 252]  # ~1 quarter, ~6 months, ~1 year (trading days)
 MIN_N_FOR_STATS = 15
 
+# Same convention as predict.py's TEST_FRACTION, for the same reason: fit only
+# on the past, score only on the future.
+TEST_FRACTION = 0.25
+WF_N_FOLDS = 5
+WF_MIN_FOLD_TEST = 20
+
 
 def _sig_stars(p: float) -> str:
     if p < 0.01:
@@ -39,6 +54,97 @@ def _sig_stars(p: float) -> str:
     if p < 0.10:
         return "*"
     return "ns"
+
+
+def _chronological_split(df: pd.DataFrame, date_col: str, test_fraction: float):
+    dates = sorted(df[date_col].unique())
+    cutoff = dates[int(len(dates) * (1 - test_fraction))]
+    return df[df[date_col] < cutoff], df[df[date_col] >= cutoff]
+
+
+def _baseline_r2(y_train: pd.Series, y_test: pd.Series) -> float:
+    """R^2 of the simplest honest forecast: predict the training mean for
+    every test row. Not zero in general — sklearn's R^2 always compares
+    against the mean of whatever set is being scored, so this baseline only
+    lands near 0 when the train and test means agree, and can go negative
+    when they don't (which is itself informative: fundamentals-driven returns
+    are not stationary across the panel's 2008-2026 span)."""
+    baseline_pred = np.full(len(y_test), float(y_train.mean()))
+    return float(r2_score(y_test, baseline_pred))
+
+
+def _out_of_sample_ols(full: pd.DataFrame, target_col: str) -> dict | None:
+    """Chronological train/test split for the multi-feature regression —
+    replaces the old in-sample-only R^2 with the number that actually says
+    whether the fit generalizes."""
+    train, test = _chronological_split(full, "anchor_date", TEST_FRACTION)
+    if len(train) < MIN_N_FOR_STATS or len(test) < MIN_N_FOR_STATS:
+        return None
+
+    X_train, y_train = train[FUNDAMENTAL_FEATURES], train[target_col]
+    X_test, y_test = test[FUNDAMENTAL_FEATURES], test[target_col]
+
+    model = LinearRegression().fit(X_train, y_train)
+    train_r2 = float(model.score(X_train, y_train))
+    test_r2 = float(r2_score(y_test, model.predict(X_test)))
+    baseline_r2 = _baseline_r2(y_train, y_test)
+
+    return {
+        "n_train": int(len(train)),
+        "n_test": int(len(test)),
+        "train_r2": round(train_r2, 3),
+        "test_r2": round(test_r2, 3),
+        "baseline_r2": round(baseline_r2, 3),
+        "beats_baseline": test_r2 > baseline_r2,
+        "coefficients": {
+            feat: round(float(coef), 4)
+            for feat, coef in zip(FUNDAMENTAL_FEATURES, model.coef_)
+        },
+    }
+
+
+def _walk_forward_r2(
+    full: pd.DataFrame, target_col: str,
+    n_folds: int = WF_N_FOLDS, min_fold_test: int = WF_MIN_FOLD_TEST,
+) -> list[dict]:
+    """Expanding-window folds, same construction as predict.py's
+    _walk_forward_accuracies: fold i trains on everything up to a cutoff and
+    tests on the next chronological slice. One 75/25 split can be a lucky or
+    unlucky draw from a panel spanning three recessions and a pandemic; this
+    is what shows whether the fit holds up across different stretches of it."""
+    dates = sorted(full["anchor_date"].unique())
+    n = len(dates)
+    max_folds = max(1, (n // min_fold_test) - 1)
+    n_folds = min(n_folds, max_folds)
+    if n_folds < 1:
+        return []
+
+    segment = n // (n_folds + 1)
+    results = []
+    for i in range(1, n_folds + 1):
+        train_end = dates[i * segment - 1]
+        test_start_idx = i * segment
+        test_end_idx = (i + 1) * segment if i < n_folds else n
+        test_start = dates[test_start_idx]
+        test_end = dates[test_end_idx - 1]
+
+        train = full[full["anchor_date"] <= train_end]
+        test = full[(full["anchor_date"] >= test_start) & (full["anchor_date"] <= test_end)]
+        if len(train) < MIN_N_FOR_STATS or len(test) < min_fold_test:
+            continue
+
+        model = LinearRegression().fit(train[FUNDAMENTAL_FEATURES], train[target_col])
+        test_r2 = float(r2_score(test[target_col], model.predict(test[FUNDAMENTAL_FEATURES])))
+        baseline_r2 = _baseline_r2(train[target_col], test[target_col])
+        results.append({
+            "test_start": str(test_start),
+            "test_end": str(test_end),
+            "n_test": int(len(test)),
+            "test_r2": round(test_r2, 3),
+            "baseline_r2": round(baseline_r2, 3),
+            "beats_baseline": test_r2 > baseline_r2,
+        })
+    return results
 
 
 def _correlation_table(panel: pd.DataFrame, horizon: int):
@@ -54,18 +160,37 @@ def _correlation_table(panel: pd.DataFrame, horizon: int):
         r, p = scipy_stats.pearsonr(sub[feat], sub[target_col])
         print(f"  {feat:<20} n={n:>3}  r={r:+.3f}  p={p:.3f}  {_sig_stars(p)}")
 
-    # multi-feature linear regression, only if enough complete rows exist
-    full = panel[FUNDAMENTAL_FEATURES + [target_col]].dropna()
-    if len(full) >= MIN_N_FOR_STATS + len(FUNDAMENTAL_FEATURES):
-        X, y = full[FUNDAMENTAL_FEATURES], full[target_col]
-        model = LinearRegression().fit(X, y)
-        r2 = model.score(X, y)
-        print(f"  [multi-feature OLS] n={len(full)}  R^2={r2:.3f}  (in-sample fit, not out-of-sample — indicative only)")
-        for feat, coef in zip(FUNDAMENTAL_FEATURES, model.coef_):
-            print(f"      {feat:<20} coef={coef:+.4f}")
-    else:
+    # multi-feature linear regression, chronologically held out — see
+    # _out_of_sample_ols for why this is no longer an in-sample number.
+    full = panel[FUNDAMENTAL_FEATURES + [target_col, "anchor_date"]].dropna()
+    oos = _out_of_sample_ols(full, target_col) if len(full) >= MIN_N_FOR_STATS * 2 else None
+
+    if oos is None:
+        need = MIN_N_FOR_STATS * 2
         print(f"  [multi-feature OLS] skipped — only {len(full)} rows with every feature present "
-              f"(need >= {MIN_N_FOR_STATS + len(FUNDAMENTAL_FEATURES)})")
+              f"(need >= {need} to hold out a chronological test split)")
+        return
+
+    beat = "beats" if oos["beats_baseline"] else "does not beat"
+    print(f"  [multi-feature OLS] n_train={oos['n_train']} n_test={oos['n_test']}  "
+          f"train_R^2={oos['train_r2']:.3f}  test_R^2={oos['test_r2']:.3f}  "
+          f"baseline_R^2={oos['baseline_r2']:.3f}  ({beat} the train-mean baseline)")
+    for feat, coef in oos["coefficients"].items():
+        print(f"      {feat:<20} coef={coef:+.4f}")
+
+    wf = _walk_forward_r2(full, target_col)
+    if wf:
+        r2s = [f["test_r2"] for f in wf]
+        beating = sum(1 for f in wf if f["beats_baseline"])
+        print(f"  [walk-forward, {len(wf)} folds] test_R^2 range {min(r2s):+.3f} to {max(r2s):+.3f} "
+              f"(mean {np.mean(r2s):+.3f}) — {beating}/{len(wf)} folds beat their own baseline")
+        for f in wf:
+            print(f"      {f['test_start']} -> {f['test_end']}  n={f['n_test']:>4}  "
+                  f"test_R^2={f['test_r2']:+.3f}  baseline={f['baseline_r2']:+.3f}  "
+                  f"{'beats' if f['beats_baseline'] else 'does not beat'}")
+    else:
+        print(f"  [walk-forward] skipped — not enough chronological spread for "
+              f"{WF_N_FOLDS} folds of >= {WF_MIN_FOLD_TEST} rows each")
 
 
 def main() -> None:
