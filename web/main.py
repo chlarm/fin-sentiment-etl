@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from pathlib import Path
 import numpy as np
@@ -172,7 +173,8 @@ TICKER_DISPLAY_NAMES: dict[str, str] = {
     "TSLA":     "Tesla",
 }
 
-VALID_TABS = frozenset({"home", "predict", "watchlist", "news", "metrics", "corr", "fundamentals"})
+VALID_TABS = frozenset({"home", "predict", "watchlist", "news", "metrics", "corr",
+                        "fundamentals", "company"})
 
 # Simple in-memory cache for live sentiment (refreshed by /api/live-sentiment)
 _live_sentiment_cache: dict = {"data": [], "updated_at": None}
@@ -277,6 +279,70 @@ def _get_fundamentals(ticker_symbol: str) -> dict | None:
         "n_quarters": len(rows),
         "earliest": rows[0]["fiscal_period_end"],
     }
+
+
+SENTENCES_PER_PARAGRAPH = 4
+BUSINESS_PREVIEW_PARAGRAPHS = 3
+
+
+def _paragraphise(text_body: str) -> list[str]:
+    """Group the business text into readable paragraphs.
+
+    Extraction strips markup and collapses whitespace, so the filing's own
+    paragraph breaks are gone by the time the text reaches the database. This
+    regroups it every few sentences purely so the page is readable — no word
+    is added, removed or reordered, and the full text is what the filing says.
+    """
+    sentences = re.findall(r".+?(?:\.\s|$)", text_body)
+    return [
+        "".join(sentences[i:i + SENTENCES_PER_PARAGRAPH]).strip()
+        for i in range(0, len(sentences), SENTENCES_PER_PARAGRAPH)
+    ]
+
+
+def _get_company_profile(ticker_symbol: str) -> dict | None:
+    """SEC registrant profile and 10-K business narrative for one ticker.
+
+    Returns None when the asset has no SEC registrant at all — indices,
+    forex, commodities and crypto do not file with the SEC, so the absence is
+    a fact about the asset rather than a gap in the data.
+    """
+    df = qdf("""
+        SELECT c.cik, c.legal_name, c.sic, c.sic_description, c.entity_type,
+               c.state_of_incorporation, c.fiscal_year_end, c.exchanges, c.ein,
+               c.filer_category, c.phone, c.hq_street, c.hq_city, c.hq_state,
+               c.former_names, c.business_description, c.latest_10k_filed,
+               c.latest_10k_accession, c.latest_10k_url, c.recent_filings,
+               c.fetched_at
+        FROM dim_company_profile c
+        JOIN dim_asset a ON a.asset_id = c.asset_id
+        WHERE a.ticker = :t
+    """, t=ticker_symbol)
+    if df.empty:
+        return None
+
+    r = df.iloc[0].to_dict()
+    body = r.pop("business_description") or None
+    paragraphs = _paragraphise(body) if body else []
+
+    filings = r.pop("recent_filings") or []
+    r["filings"] = filings if isinstance(filings, list) else []
+    r["business_paragraphs"] = paragraphs
+    r["business_preview"] = paragraphs[:BUSINESS_PREVIEW_PARAGRAPHS]
+    r["business_rest"] = paragraphs[BUSINESS_PREVIEW_PARAGRAPHS:]
+    r["business_chars"] = len(body) if body else 0
+    r["latest_10k_filed"] = (
+        r["latest_10k_filed"].strftime("%Y-%m-%d") if pd.notna(r["latest_10k_filed"]) else None
+    )
+    r["fetched_at"] = (
+        r["fetched_at"].strftime("%Y-%m-%d") if pd.notna(r["fetched_at"]) else None
+    )
+    r["cik_url"] = (
+        f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={r['cik']}"
+        f"&type=10-K&dateb=&owner=include&count=40" if r["cik"] else None
+    )
+    r["ticker"] = ticker_symbol
+    return r
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -709,6 +775,15 @@ def dashboard(
         fundamentals_ticker = ticker if ticker != 'ALL' else (tickers_list[0] if tickers_list else 'AAPL')
         fundamentals_result = _get_fundamentals(fundamentals_ticker)
 
+    # --- company: SEC registrant profile + 10-K business narrative ---
+    company_result = None
+    company_ticker = ticker
+    company_has_profile = True
+    if tab == 'company':
+        company_ticker = ticker if ticker != 'ALL' else (tickers_list[0] if tickers_list else 'AAPL')
+        company_result = _get_company_profile(company_ticker)
+        company_has_profile = company_result is not None
+
     # --- watchlist: check each watched ticker's signal for a flip since last view ---
     watchlist_tickers = []
     watchlist_rows = []
@@ -739,6 +814,9 @@ def dashboard(
         watchlist_tickers=watchlist_tickers,
         fundamentals_result=fundamentals_result,
         fundamentals_ticker=fundamentals_ticker,
+        company_result=company_result,
+        company_ticker=company_ticker,
+        company_has_profile=company_has_profile,
         start_date=start_date_str,
         end_date=end_date_str,
         ticker_options=ticker_options,

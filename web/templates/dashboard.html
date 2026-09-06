@@ -38,6 +38,7 @@
       <a href="/?tab=home" class="nav-item {% if tab=='home' %}active{% endif %}" data-i18n="nav.home">Home</a>
       <a href="/?tab=predict&ticker={{ ticker }}" class="nav-item {% if tab=='predict' %}active{% endif %}" data-i18n="nav.predict">Signal</a>
       <a href="/?tab=watchlist" class="nav-item {% if tab=='watchlist' %}active{% endif %}" data-i18n="nav.watchlist">Watchlist</a>
+      <a href="/?tab=company&ticker={{ ticker }}" class="nav-item {% if tab=='company' %}active{% endif %}" data-i18n="nav.company">Company</a>
       <a href="/?tab=fundamentals&ticker={{ ticker }}" class="nav-item {% if tab=='fundamentals' %}active{% endif %}" data-i18n="nav.fundamentals">Fundamentals</a>
       <a href="/?tab=news&ticker={{ ticker }}&start_d={{ start_date }}&end_d={{ end_date }}" class="nav-item {% if tab=='news' %}active{% endif %}" data-i18n="nav.news">News</a>
       <a href="/daily" class="nav-item" data-i18n="nav.daily_summary">Daily Summary</a>
@@ -770,6 +771,143 @@
           {% endfor %}
         </tbody>
       </table>
+    </div>
+    {% endif %}
+
+    {% elif tab == 'company' %}
+    <h2 style="margin-bottom: 4px;" data-i18n="co.title">Company profile</h2>
+    <p style="color: var(--text-muted); margin-bottom: 16px;" data-i18n="co.desc">
+      Everything on this tab comes from the company's own filings with the U.S. Securities and Exchange Commission. The business description is Item 1 of the most recent annual report (Form 10-K) — the company's statutory account of what it does, filed under legal obligation, not a third-party summary. Every block links to the exact source document.
+    </p>
+
+    <form method="get" action="/" style="margin-bottom:16px; display:flex; gap:8px; align-items:center;">
+      <input type="hidden" name="tab" value="company">
+      <select name="ticker" onchange="this.form.submit()" style="padding:6px 10px; border-radius:6px; border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-main);">
+        {% for opt in ticker_options if opt != 'ALL' %}
+        <option value="{{ opt }}" {% if opt == company_ticker %}selected{% endif %}>{{ ticker_display_names.get(opt, opt) }}</option>
+        {% endfor %}
+      </select>
+    </form>
+
+    {% if not company_result %}
+    <div style="color: var(--text-muted);" data-i18n="co.no_registrant">
+      {{ company_ticker }} has no SEC registrant — indices, forex, commodities and cryptocurrencies do not file with the SEC, so there is no filed profile to show. This is a property of the asset, not missing data.
+    </div>
+    {% else %}
+    {% set C = company_result %}
+
+    <div style="background: var(--bg-card); border:1px solid var(--border-color); border-radius:8px; padding:16px 18px; margin-bottom:16px;">
+      <div style="display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;">
+        <div style="font-size:1.3em; font-weight:700;">{{ C.legal_name }}</div>
+        <div class="ticker-col" style="font-size:0.95em;">{{ C.ticker }}</div>
+      </div>
+      {% if C.sic_description %}
+      <div style="color:var(--text-muted); margin-top:4px; font-size:0.9em;">
+        <span data-i18n="co.sic_label">SEC industry classification</span>: {{ C.sic_description }}{% if C.sic %} (SIC {{ C.sic }}){% endif %}
+      </div>
+      {% endif %}
+      {% if C.former_names %}
+      <div style="color:var(--text-muted); margin-top:4px; font-size:0.85em;">
+        <span data-i18n="co.former_names">Formerly</span>: {{ C.former_names }}
+      </div>
+      {% endif %}
+    </div>
+
+    <div style="display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
+      {% set facts = [
+        ('co.fact_cik', 'CIK', C.cik),
+        ('co.fact_exchanges', 'Listed on', C.exchanges),
+        ('co.fact_incorporated', 'State of incorporation', C.state_of_incorporation),
+        ('co.fact_fye', 'Fiscal year end (MM-DD)', C.fiscal_year_end),
+        ('co.fact_filer', 'Filer category', C.filer_category),
+        ('co.fact_hq', 'Headquarters', ((C.hq_city ~ ', ' ~ C.hq_state) if C.hq_city and C.hq_state else (C.hq_city or C.hq_state))),
+      ] %}
+      {% for key, label, value in facts %}{% if value %}
+      <div style="min-width:170px; background: var(--bg-card); padding:12px 14px; border-radius:8px; border:1px solid var(--border-color);">
+        <div style="font-size:0.75em; color:var(--text-muted); margin-bottom:5px;" data-i18n="{{ key }}">{{ label }}</div>
+        <div style="font-size:0.95em; font-weight:600;">{{ value }}</div>
+      </div>
+      {% endif %}{% endfor %}
+    </div>
+
+    <div style="background: var(--bg-card); border:1px solid var(--border-color); border-radius:8px; padding:16px 18px; margin-bottom:16px;">
+      <div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
+        <div style="font-size:1.05em; font-weight:700;" data-i18n="co.business_title">What the company does — Item 1, Business</div>
+        {% if C.latest_10k_url %}
+        <a href="{{ C.latest_10k_url }}" target="_blank" rel="noopener noreferrer" style="font-size:0.82em;">
+          <span data-i18n="co.source_10k">Source: Form 10-K filed</span> {{ C.latest_10k_filed }} →
+        </a>
+        {% endif %}
+      </div>
+
+      {% if C.business_paragraphs %}
+      <div style="font-size:0.8em; color:var(--text-muted); margin-bottom:12px; line-height:1.5;">
+        <span data-i18n="co.business_note">Verbatim from the filing. Accession number</span>
+        <code>{{ C.latest_10k_accession }}</code>{{ " · " }}{{ "{:,}".format(C.business_chars) }}
+        <span data-i18n="co.business_chars">characters</span>{{ " · " }}
+        <span data-i18n="co.business_reflow">paragraph breaks were rebuilt for readability; no wording was changed</span>
+      </div>
+      {% for p in C.business_preview %}
+      <p style="line-height:1.7; margin-bottom:12px;">{{ p }}</p>
+      {% endfor %}
+      {% if C.business_rest %}
+      <details>
+        <summary style="cursor:pointer; font-weight:600; font-size:0.9em; color:var(--accent, #3861fb);">
+          <span data-i18n="co.read_full">Read the full section</span> ({{ C.business_rest|length }} <span data-i18n="co.more_paragraphs">more paragraphs</span>)
+        </summary>
+        <div style="margin-top:12px; max-height:520px; overflow-y:auto; padding-right:8px;">
+          {% for p in C.business_rest %}
+          <p style="line-height:1.7; margin-bottom:12px;">{{ p }}</p>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+
+      {% else %}
+      {# Two of the 21 filers (MSFT, INTC) head their business section in a way
+         that has no locatable "Item 1. Business" in the document body — see
+         company_profile_edgar.py. Showing a wrong section would be worse than
+         showing none, so the reader is sent to the filing itself. #}
+      <div style="color:var(--text-muted); line-height:1.6;" data-i18n="co.business_unavailable">
+        This filing does not use a locatable "Item 1. Business" heading in its body, so no text was extracted rather than risk showing the wrong section. The filing itself is linked above and contains the business description.
+      </div>
+      {% endif %}
+    </div>
+
+    {% if C.filings %}
+    <div class="ff-table-container">
+      <div style="padding:14px 16px 0;">
+        <div style="font-size:0.95em; font-weight:700;" data-i18n="co.filings_title">Recent SEC filings</div>
+        <div style="font-size:0.8em; color:var(--text-muted); margin:4px 0 10px;">
+          <span data-i18n="co.filings_desc">Each row links to the primary document on sec.gov.</span>
+          {% if C.cik_url %}<a href="{{ C.cik_url }}" target="_blank" rel="noopener noreferrer"><span data-i18n="co.filings_all">All filings on EDGAR</span> →</a>{% endif %}
+        </div>
+      </div>
+      <table class="ff-table">
+        <thead>
+          <tr>
+            <th data-i18n="co.filing_form">Form</th>
+            <th data-i18n="co.filing_filed">Filed</th>
+            <th data-i18n="co.filing_accession">Accession number</th>
+            <th data-i18n="co.filing_doc">Document</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in C.filings %}
+          <tr>
+            <td style="font-weight:600;">{{ f.form }}</td>
+            <td class="date-col">{{ f.filed }}</td>
+            <td class="text-muted"><code>{{ f.accession }}</code></td>
+            <td><a href="{{ f.url }}" target="_blank" rel="noopener noreferrer" data-i18n="co.filing_open">Open on sec.gov →</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    <div style="font-size:0.78em; color:var(--text-muted); margin-top:12px;">
+      <span data-i18n="co.fetched">Retrieved from SEC EDGAR on</span> {{ C.fetched_at }}
     </div>
     {% endif %}
 

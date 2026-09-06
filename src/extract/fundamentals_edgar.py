@@ -53,9 +53,15 @@ import requests
 CIK_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 
-# SEC asks that automated clients identify themselves with a real contact.
-# Kept in an env var so a contact address isn't baked into the repository.
-DEFAULT_USER_AGENT = "fin-sentiment-etl academic research (set SEC_USER_AGENT)"
+# SEC asks that automated clients identify themselves with a real contact, and
+# www.sec.gov *enforces* it: measured 2026-09-06, that host returns 403 for any
+# User-Agent with no email address in it, whatever else the string says. Only
+# data.sec.gov is lenient, which is why the fundamentals loader kept working on
+# companyfacts while every www.sec.gov fetch (the CIK map, filing documents)
+# failed. The default below is therefore a placeholder that merely satisfies the
+# format; set SEC_USER_AGENT to a real contact address, which is what SEC asks
+# for and what keeps the request honest.
+DEFAULT_USER_AGENT = "fin-sentiment-etl academic research contact@example.com"
 
 # SEC's published guidance is max 10 requests/second; we go far below that.
 REQUEST_DELAY_SECONDS = 0.2

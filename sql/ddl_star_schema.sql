@@ -160,3 +160,37 @@ SELECT
 FROM fact_price_daily p
 JOIN dim_asset a ON a.asset_id = p.asset_id
 LEFT JOIN fact_sentiment_daily s ON s.asset_id = p.asset_id AND s.d = p.d;
+
+-- Registrant profile and business narrative from SEC EDGAR. One row per asset
+-- that actually files with the SEC; indices, forex, commodities and crypto
+-- have no row at all, which is a property of the asset rather than missing
+-- data. Every field is traceable to a filing: latest_10k_url points at the
+-- exact document the business description was read from.
+CREATE TABLE IF NOT EXISTS dim_company_profile (
+  asset_id               INT PRIMARY KEY REFERENCES dim_asset(asset_id),
+  cik                    TEXT,
+  legal_name             TEXT,
+  sic                    TEXT,
+  sic_description        TEXT,   -- SEC's own industry classification
+  entity_type            TEXT,
+  state_of_incorporation TEXT,
+  fiscal_year_end        TEXT,   -- MMDD, e.g. 0926 for the last Saturday of Sept
+  exchanges              TEXT,
+  ein                    TEXT,
+  filer_category         TEXT,
+  phone                  TEXT,
+  hq_street              TEXT,
+  hq_city                TEXT,
+  hq_state               TEXT,
+  former_names           TEXT,
+  -- Item 1 "Business" from the most recent 10-K. NULL when the filing does
+  -- not use a locatable Item 1 heading (see company_profile_edgar.py) — the
+  -- profile and the filing link are still useful, and a wrong description
+  -- would be worse than none.
+  business_description   TEXT,
+  latest_10k_filed       DATE,
+  latest_10k_accession   TEXT,
+  latest_10k_url         TEXT,
+  recent_filings         JSONB,  -- [{form, filed, accession, url}, ...]
+  fetched_at             TIMESTAMPTZ DEFAULT now()
+);

@@ -773,3 +773,65 @@ translation left the URL unchanged, so browsers kept serving the cached
 from a broken translation. Every earlier i18n change only became visible
 because some CSS edit happened to move the token. Now the newest mtime across
 the whole static directory.
+
+---
+
+## 2026-09-06 — Company tab: what each business actually does, from its own filings
+
+**What**: a new tab showing, per ticker, the SEC registrant profile (legal
+name, SIC industry classification, state of incorporation, fiscal year end,
+exchanges, filer category, headquarters, former names) and the Item 1
+"Business" narrative from the most recent Form 10-K, plus the last eight
+filings with direct links to sec.gov. Stored in `dim_company_profile`, loaded
+by `src/scripts/load_company_profiles.py`, extracted by
+`src/extract/company_profile_edgar.py`.
+
+**Why EDGAR rather than a company-description API or an encyclopedia**: every
+sentence shown is traceable to a specific document with an accession number
+and a permanent SEC URL, and it is the company's own statutory account of its
+operations, filed under legal obligation. A claim about what Apple does cites
+Apple's 10-K, not a third party's summary of it. That is the difference
+between a dashboard field and a citable source.
+
+**Extraction succeeds for 19 of 21 equities; the 2 failures are structural,
+not parsing bugs.**
+
+| Ticker | Why it fails |
+|---|---|
+| MSFT | "Item 1. Business" occurs exactly once in the whole document — in the index. The body heading is formatted differently. |
+| INTC | Uses a "Form 10-K Cross-Reference Index" mapping items to page numbers, so no Item 1 heading exists in the body at all. |
+
+No regex fixes these, because the string being searched for is genuinely
+absent. Those two store NULL and the page says so, still linking the filing.
+A fragment that looks like a business description and is not would be worse
+than none — the same reasoning that left Q4 derivation off.
+
+**A start must pair with the FIRST following end.** The first heuristic paired
+every "Item 1. Business" with every "Item 1A. Risk Factors" and took the
+longest span, so a table-of-contents line paired with the last risk-factors
+mention and swallowed the document: Coca-Cola came out at 214,481 characters.
+Pairing each start with the first end that follows it, then taking the longest
+such span, gives 92,190 for KO and a genuine 5,608–92,843 range across the 19.
+Bounds of 3,000 and 150,000 characters reject the two remaining shapes of
+mis-parse. Regression tests cover both, in `tests/test_company_profile_edgar.py`.
+
+**A real bug found on the way in** (`src/extract/fundamentals_edgar.py`):
+`www.sec.gov` returns 403 for any User-Agent with no email address in it,
+whatever else the string says — measured across four variants. `data.sec.gov`
+does not enforce this. The project's default UA had no email, so every
+`www.sec.gov` request failed while `data.sec.gov` kept working. That is why
+the fundamentals loader appeared healthy: it reads companyfacts from
+`data.sec.gov` and only touches `www.sec.gov` for the CIK map, which it
+silently fell back from. Set `SEC_USER_AGENT` to a real contact address; the
+default is now only a format-satisfying placeholder.
+
+**Nine of the 30 assets have no row at all** — BTC-USD, ETH-USD, ^GSPC, ^DJI,
+^IXIC, GC=F, CL=F, EURUSD=X, THBUSD=X. Indices, forex, commodities and crypto
+do not file with the SEC. The tab says this explicitly rather than showing an
+empty profile, because "no registrant" is a property of the asset, not a gap
+in the data.
+
+**Paragraph breaks are rebuilt, wording is not touched.** Stripping markup
+collapses whitespace, so the filing's own paragraph structure is gone before
+the text reaches the database. The page regroups it every four sentences for
+readability and says so on screen; no word is added, removed or reordered.
